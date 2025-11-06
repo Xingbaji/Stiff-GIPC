@@ -2,7 +2,7 @@
 #include <gipc/type_define.h>
 #include <muda/ext/linear_system.h>
 #include <gipc/utils/json.h>
-
+#include "linear_system/linear_system/global_matrix.h"
 namespace muda
 {
 class LinearSystemContext;
@@ -37,7 +37,8 @@ class IPreconditioner
     virtual void do_apply(muda::CDenseVectorView<Float> r,
                           muda::DenseVectorView<Float>  z) = 0;
 
-    virtual void do_assemble(muda::CBCOOMatrixView<Float, 3> hessian) = 0;
+    //virtual void do_assemble(muda::CBCOOMatrixView<Float, 3> hessian) = 0;
+    virtual void do_assemble(GIPCTripletMatrix& global_triplets)      = 0;
 };
 
 class LocalPreconditioner : public IPreconditioner
@@ -61,8 +62,7 @@ class LocalPreconditioner : public IPreconditioner
 
   private:
     void do_apply(muda::CDenseVectorView<Float> r, muda::DenseVectorView<Float> z) override;
-    void do_assemble(muda::CBCOOMatrixView<Float, 3> hessian) override;
-
+    void do_assemble(GIPCTripletMatrix& global_triplets) override;
     mutable muda::DeviceBuffer<int> m_indices_input;
     mutable muda::DeviceBuffer<int> m_flags;
     mutable muda::DeviceBuffer<int> m_indices_output;
@@ -86,12 +86,14 @@ class GlobalPreconditioner : public IPreconditioner
     virtual ~GlobalPreconditioner() = default;
 
   protected:
-    virtual void assemble(muda::CBCOOMatrixView<Float, 3> hessian) = 0;
+    //virtual void assemble(muda::CBCOOMatrixView<Float, 3> hessian) = 0;
+    virtual void assemble(GIPCTripletMatrix& global_triplets)      = 0;
     virtual void apply(muda::CDenseVectorView<Float> r, muda::DenseVectorView<Float> z) = 0;
 
   private:
     void do_apply(muda::CDenseVectorView<Float> r, muda::DenseVectorView<Float> z) override;
 
-    virtual void do_assemble(muda::CBCOOMatrixView<Float, 3> hessian) override;
+    //virtual void do_assemble(muda::CBCOOMatrixView<Float, 3> hessian) override;
+    virtual void do_assemble(GIPCTripletMatrix& global_triplets) override;
 };
 }  // namespace gipc

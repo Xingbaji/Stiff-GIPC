@@ -11,7 +11,9 @@ class DiagPreconditioner : public GlobalPreconditioner
 
   public:
     // Inherited via GlobalPreconditioner
-    virtual void assemble(muda::CBCOOMatrixView<gipc::Float, 3> hessian) override;
+    //virtual void assemble(muda::CBCOOMatrixView<gipc::Float, 3> hessian) override;
+    virtual void assemble(GIPCTripletMatrix& global_triplets) override;
+
     virtual void apply(muda::CDenseVectorView<gipc::Float> r,
                        muda::DenseVectorView<gipc::Float>  z) override;
 

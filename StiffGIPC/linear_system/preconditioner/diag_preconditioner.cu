@@ -51,17 +51,21 @@ namespace details
     }
 
     void diag_assemble(muda::BufferView<gipc::Matrix<3, 3>>  diag_inv,
-                       muda::CBCOOMatrixView<gipc::Float, 3> hessian)
+                       GIPCTripletMatrix&                   global_triplets)
     {
         using namespace muda;
 
         ParallelFor()
             .file_line(__FILE__, __LINE__)
-            .apply(hessian.triplet_count(),
+            .apply(global_triplets.h_unique_key_number,
                    [diag = diag_inv.viewer().name("diag"),
-                    hessian = hessian.viewer().name("hessian")] __device__(int I) mutable
+                    hessian = global_triplets.block_values(),
+                    rows = global_triplets.block_row_indices(),
+                    cols = global_triplets.block_col_indices()] __device__(int I) mutable
                    {
-                       auto&& [i, j, H] = hessian(I);
+                       auto i           = rows[I];
+                       auto j           = cols[I];
+                       auto H           = hessian[I];
                        if(i != j)
                            return;
 
@@ -89,12 +93,20 @@ namespace details
     }
 }  // namespace details
 
-void DiagPreconditioner::assemble(muda::CBCOOMatrixView<gipc::Float, 3> hessian)
+//void DiagPreconditioner::assemble(muda::CBCOOMatrixView<gipc::Float, 3> hessian)
+//{
+//    gipc::Timer timer{"precomputing Preconditioner"};
+//    auto cols = hessian.total_block_cols();
+//    m_diag3x3.resize(cols);
+//    details::diag_assemble(m_diag3x3.view(), hessian);
+//}
+
+void DiagPreconditioner::assemble(GIPCTripletMatrix& global_triplets)
 {
     gipc::Timer timer{"precomputing Preconditioner"};
-    auto cols = hessian.total_block_cols();
+    auto        cols = global_triplets.block_cols();
     m_diag3x3.resize(cols);
-    details::diag_assemble(m_diag3x3.view(), hessian);
+    details::diag_assemble(m_diag3x3.view(), global_triplets);
 }
 
 void DiagPreconditioner::apply(muda::CDenseVectorView<gipc::Float> r,

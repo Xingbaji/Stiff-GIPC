@@ -92,8 +92,8 @@ bool GlobalLinearSystem::build_linear_system()
     convert2();
 
     // assemble preconditioners
-    //if(m_global_preconditioner)
-    //    m_global_preconditioner->do_assemble(m_bcoo_A);
+    if(m_global_preconditioner)
+        m_global_preconditioner->do_assemble(*gipc_global_triplet);
 
     for(int i = start_preconditioner_id; i < m_local_preconditioners.size(); i++)
     {

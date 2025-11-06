@@ -93,10 +93,12 @@ void LocalPreconditioner::do_apply(muda::CDenseVectorView<Float> r,
     apply(r.subview(dof_offset, dof_count), z.subview(dof_offset, dof_count));
 }
 
-void LocalPreconditioner::do_assemble(muda::CBCOOMatrixView<Float, 3> hessian)
+void LocalPreconditioner::do_assemble(GIPCTripletMatrix& global_triplets)
 {
     assemble();
 }
+
+
 
 void GlobalPreconditioner::do_apply(muda::CDenseVectorView<Float> r,
                                     muda::DenseVectorView<Float>  z)
@@ -104,8 +106,9 @@ void GlobalPreconditioner::do_apply(muda::CDenseVectorView<Float> r,
     apply(r, z);
 }
 
-void GlobalPreconditioner::do_assemble(muda::CBCOOMatrixView<Float, 3> hessian)
+void GlobalPreconditioner::do_assemble(GIPCTripletMatrix& global_triplets)
 {
-    assemble(hessian);
+    assemble(global_triplets);
 }
+
 }  // namespace gipc
