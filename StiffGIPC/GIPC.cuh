@@ -102,7 +102,7 @@ class GIPC
     uint32_t surface_Num    = 0;
     uint32_t tetrahedraNum  = 0;
 
-    gipc::GIPCTripletMatrix<double, 3> gipc_global_triplet;
+    GIPCTripletMatrix gipc_global_triplet;
     AABB     SceneSize;
     int      MAX_COLLITION_PAIRS_NUM     = 0;
     int      MAX_CCD_COLLITION_PAIRS_NUM = 0;

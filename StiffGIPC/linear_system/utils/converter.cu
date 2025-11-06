@@ -52,7 +52,7 @@ void print_matrix(const muda::DeviceTripletMatrix<Float, 3>& mat)
 constexpr bool UseRadixSort   = true;
 constexpr bool UseReduceByKey = false;
 
-void Converter::convert(gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+void Converter::convert(GIPCTripletMatrix& global_triplets,
                         const int&                          start,
                         const int&                          length,
                         const int&                          out_start_id)
@@ -242,7 +242,7 @@ void Converter::_radix_sort_indices_and_blocks(const muda::DeviceTripletMatrix<T
     }
 }
 
-void Converter::_radix_sort_indices_and_blocks(gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+void Converter::_radix_sort_indices_and_blocks(GIPCTripletMatrix& global_triplets,
                                                const int& start,
                                                const int& length,
                                                const int& out_start_id)
@@ -461,7 +461,7 @@ void Converter::_make_unique_indices(const muda::DeviceTripletMatrix<T, N>& from
 }
 
 
-void Converter::_make_unique_indices(gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+void Converter::_make_unique_indices(GIPCTripletMatrix& global_triplets,
                                      const int& start,
                                      const int& length,
                                      const int& out_start_id)
@@ -796,7 +796,7 @@ void Converter::_make_unique_block_warp_reduction(const muda::DeviceTripletMatri
 }
 
 
-void Converter::_make_unique_block_warp_reduction(gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+void Converter::_make_unique_block_warp_reduction(GIPCTripletMatrix& global_triplets,
                                                   const int& start, const int& length, const int& out_start_id)
 {
     using namespace muda;
@@ -1038,7 +1038,7 @@ void Converter::ge2sym(muda::DeviceBCOOMatrix<T, N>& to)
     //print_matrix(to);
 }
 
-void Converter::ge2sym(gipc::GIPCTripletMatrix<double, 3>& global_triplets)
+void Converter::ge2sym(GIPCTripletMatrix& global_triplets)
 {
     using namespace muda;
 

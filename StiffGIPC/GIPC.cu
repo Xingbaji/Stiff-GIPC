@@ -8628,7 +8628,7 @@ void GIPC::init(double m_meanMass, double m_meanVolumn, double3 minConer, double
     meanMass     = m_meanMass;
     meanVolumn   = m_meanVolumn;
     dHat = relative_dhat * relative_dhat * bboxDiagSize2;  //__GEIGEN__::__squaredNorm(__GEIGEN__::__minus(maxConer, minConer));
-    fDhat = 1e-6 * bboxDiagSize2;
+    fDhat = 1e-4 * bboxDiagSize2;
 
 
 
@@ -10641,7 +10641,6 @@ bool GIPC::lineSearch(device_TetraData& TetMesh, double& alpha, const double& cf
 {
     muda::wait_device();
     bool stopped = false;
-    //buildCP();
     double lastEnergyVal = computeEnergy(TetMesh);
 
     double c1m         = 0.0;
@@ -10650,8 +10649,6 @@ bool GIPC::lineSearch(device_TetraData& TetMesh, double& alpha, const double& cf
     {
         c1m += armijoParam * Energy_Add_Reduction_Algorithm(3, TetMesh);
     }
-
-    //CUDA_SAFE_CALL(cudaDeviceSynchronize());
 
     CUDA_SAFE_CALL(cudaMemcpy(TetMesh.temp_double3Mem,
                               TetMesh.vertexes,
@@ -10665,15 +10662,10 @@ bool GIPC::lineSearch(device_TetraData& TetMesh, double& alpha, const double& cf
 
         step_forward(TetMesh, alpha, false);
 
-    //stepForward(TetMesh.vertexes, TetMesh.temp_double3Mem, _moveDir, TetMesh.BoundaryType, alpha, false, vertexNum);
-    //step_forward(TetMesh, alpha, false);
-
     bool rehash = true;
 
     buildBVH();
 
-    //buildCP();
-    //if (h_cpNum[0] > 0) system("pause");
     int numOfIntersect = 0;
     int insectNum      = 0;
 
@@ -10686,42 +10678,35 @@ bool GIPC::lineSearch(device_TetraData& TetMesh, double& alpha, const double& cf
         alpha /= 2.0;
         numOfIntersect++;
         alpha = std::min(cfl_alpha, alpha);
-        // stepForward(TetMesh.vertexes, TetMesh.temp_double3Mem, _moveDir, TetMesh.BoundaryType, alpha, false, vertexNum);
         step_forward(TetMesh, alpha, false);
         buildBVH();
         //break;
     }
-    //lastEnergyVal = computeEnergy(TetMesh);
-    buildCP();
-    //if (h_cpNum[0] > 0) system("pause");
-    //rehash = false;
 
-    //buildCollisionSets(mesh, sh, gd, true);
+    buildCP();
+
     double testingE = computeEnergy(TetMesh);
 
     int    numOfLineSearch = 0;
     double LFStepSize      = alpha;
-    //double temp_c1m = c1m;
+
     std::cout.precision(18);
     constexpr int report_line_search_threshold = 8;
-    //std::cout << "testE:    " << testingE << "      lastEnergyVal:        " << abs(lastEnergyVal- RestNHEnergy) << std::endl;
+
     while((testingE > lastEnergyVal + c1m * alpha) && alpha > 1e-3 * LFStepSize)
     {
-        // printf("testE:    %f      lastEnergyVal:        %f         clm*alpha:    %f\n", testingE, lastEnergyVal, c1m * alpha);
-        //if(numOfLineSearch > report_line_search_threshold)
-        std::cout << "[" << numOfLineSearch << "]   testE:    " << testingE
-                  << "      lastEnergyVal:        " << lastEnergyVal << std::endl;
+        //std::cout << "[" << numOfLineSearch << "]   testE:    " << testingE
+        //          << "      lastEnergyVal:        " << lastEnergyVal << std::endl;
         alpha /= 2.0;
         ++numOfLineSearch;
 
-        // stepForward(TetMesh.vertexes, TetMesh.temp_double3Mem, _moveDir, TetMesh.BoundaryType, alpha, false, vertexNum);
         step_forward(TetMesh, alpha, false);
         buildBVH();
         buildCP();
         testingE = computeEnergy(TetMesh);
     }
     if(numOfLineSearch > report_line_search_threshold)
-        printf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! lineSearchCount=%d !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",
+        printf("!!!!!!!!!!!!!!!!!!!linesearch number is a bit high, lineSearchCount=%d !!!!!!!!!!!!!!!!!!!!!!\n",
                numOfLineSearch);
 
 
@@ -10735,13 +10720,6 @@ bool GIPC::lineSearch(device_TetraData& TetMesh, double& alpha, const double& cf
             alpha /= 2.0;
             numOfIntersect++;
             alpha = std::min(cfl_alpha, alpha);
-            //stepForward(TetMesh.vertexes,
-            //            TetMesh.temp_double3Mem,
-            //            _moveDir,
-            //            TetMesh.BoundaryType,
-            //            alpha,
-            //            false,
-            //            vertexNum);
 
             step_forward(TetMesh, alpha, false);
             buildBVH();
@@ -10752,8 +10730,6 @@ bool GIPC::lineSearch(device_TetraData& TetMesh, double& alpha, const double& cf
             buildCP();
         }
     }
-    //printf("    lineSearch time step:  %f\n", alpha);
-
 
     return stopped;
 }
@@ -10844,7 +10820,7 @@ int              GIPC::solve_subIP(device_TetraData& TetMesh,
         cudaEventCreate(&end3);
         cudaEventCreate(&end4);
 
-        printf("\n\n\ncollision num  %d\n\n\n", h_cpNum[0]+h_gpNum);
+        //printf("\n\n\ncollision num  %d\n\n\n", h_cpNum[0]+h_gpNum);
 
         cudaEventRecord(start);
         timemakePd += computeGradientAndHessian(TetMesh);
@@ -10935,12 +10911,12 @@ int              GIPC::solve_subIP(device_TetraData& TetMesh,
         time3 += time33;
         time4 += time44;
         ////*cflTime = ptime;
-        printf("time0 = %f,  time1 = %f,  time2 = %f,  time3 = %f,  time4 = %f\n",
-               time00,
-               time11,
-               time22,
-               time33,
-               time44);
+        //printf("time0 = %f,  time1 = %f,  time2 = %f,  time3 = %f,  time4 = %f\n",
+        //       time00,
+        //       time11,
+        //       time22,
+        //       time33,
+        //       time44);
         (cudaEventDestroy(start));
         (cudaEventDestroy(end0));
         (cudaEventDestroy(end1));
@@ -11159,30 +11135,9 @@ void   GIPC::IPC_Solver(device_TetraData& TetMesh)
 
 
         bool finishMotion = animation_fullRate > 0.99 ? true : false;
-        //std::cout << "minDist:  " << minDist << "       maxDist:  " << maxDist << std::endl;
-        //std::cout << "dTol:  " << dTol << "       1e-6 * bboxDiagSize2:  " << 1e-6 * bboxDiagSize2 << std::endl;
+
         if(finishMotion)
         {
-            //if((h_cpNum[0] + h_gpNum) > 0)
-            //{
-
-            //    if(minDist < dTol)
-            //    {
-            //        //tempFree_closeConstraint();
-            //        break;
-            //    }
-            //    else if(maxDist < dHat)
-            //    {
-            //        //tempFree_closeConstraint();
-            //        break;
-            //    }
-            //    else
-            //    {
-            //        //tempFree_closeConstraint();
-            //    }
-            //}
-            //else
-            //{
             tempFree_closeConstraint();
             break;
             //}

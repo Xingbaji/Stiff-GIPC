@@ -7,13 +7,11 @@
 //}
 #include"cuda_tools/cuda_device_buffer.h"
 #include"Eigen/Eigen"
-namespace gipc
-{
-template <typename T, int M>
+
 class GIPCTripletMatrix
 {
   public:
-    using BlockMatrix = Eigen::Matrix<T, M, M>;
+    using BlockMatrix = Eigen::Matrix<double, 3, 3>;
     //using EntryValueType = T;
     //int Dimenstion              = M;
   public:
@@ -79,8 +77,6 @@ class GIPCTripletMatrix
     }
 
     void update_hash_value(int fem_offset);
-
-    static constexpr int block_dim() { return M; }
 
     auto block_values(int offset = 0) { return m_block_values.data() + offset; }
     auto block_values(int offset = 0) const
@@ -180,74 +176,3 @@ class GIPCTripletMatrix
     uint32_t fem_fem_contact_num = 0;
     uint32_t fem_abd_contact_num = 0;
 };
-
-template <typename T>
-class GIPCTripletMatrix<T, 1>
-{
-  protected:
-    cudatool::CudaDeviceBuffer<T>   m_values;
-    cudatool::CudaDeviceBuffer<int> m_row_indices;
-    cudatool::CudaDeviceBuffer<int> m_col_indices;
-
-    int m_rows = 0;
-    int m_cols = 0;
-
-  public:
-    GIPCTripletMatrix()                                    = default;
-    ~GIPCTripletMatrix()                                   = default;
-    GIPCTripletMatrix(const GIPCTripletMatrix&)            = default;
-    GIPCTripletMatrix(GIPCTripletMatrix&&)                 = default;
-    GIPCTripletMatrix& operator=(const GIPCTripletMatrix&) = default;
-    GIPCTripletMatrix& operator=(GIPCTripletMatrix&&)      = default;
-
-    void reshape(int row, int col)
-    {
-        m_rows = row;
-        m_cols = col;
-    }
-
-    void resize_triplets(size_t nonzero_count)
-    {
-        m_values.resize(nonzero_count);
-        m_row_indices.resize(nonzero_count);
-        m_col_indices.resize(nonzero_count);
-    }
-
-    void reserve_triplets(size_t nonzero_count)
-    {
-        m_values.reserve(nonzero_count);
-        m_row_indices.reserve(nonzero_count);
-        m_col_indices.reserve(nonzero_count);
-    }
-
-    void resize(int row, int col, size_t nonzero_count)
-    {
-        reshape(row, col);
-        resize_triplets(nonzero_count);
-    }
-
-    static constexpr int block_size() { return 1; }
-
-    auto values() { return m_values.data(); }
-    auto values() const { return m_values.data(); }
-    auto row_indices() { return m_row_indices.data(); }
-    auto row_indices() const { return m_row_indices.data(); }
-    auto col_indices() { return m_col_indices.data(); }
-    auto col_indices() const { return m_col_indices.data(); }
-
-    auto rows() const { return m_rows; }
-    auto cols() const { return m_cols; }
-    auto triplet_count() const { return m_values.size(); }
-
-    void clear()
-    {
-        m_rows = 0;
-        m_cols = 0;
-        m_values.clear();
-        m_row_indices.clear();
-        m_col_indices.clear();
-    }
-};
-}  // namespace gipc
-
-//#include "linear_system/linear_system/global_matrix.inl"

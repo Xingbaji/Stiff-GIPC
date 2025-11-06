@@ -34,7 +34,7 @@ class ABDSystem
     muda::DeviceBuffer<Matrix12x12>       abd_body_hessian;
     //muda::LinearSystemContext             linear_system_context;
     //muda::DeviceTripletMatrix<double, 12> triplet_hessian;
-    gipc::GIPCTripletMatrix<double, 3>*   global_triplet;
+    GIPCTripletMatrix*   global_triplet;
     //muda::DeviceBCOOMatrix<double, 12>    bcoo_hessian;
     //muda::DeviceBSRMatrix<double, 12>     bsr_hessian;
     muda::DeviceDenseMatrix<double>       dense_system_hessian;
@@ -184,15 +184,15 @@ class ABDSystem
     /// <param name="sim_data"></param>
     /// <param name="vertex_barrier_gradient"></param>
     void setup_abd_system_gradient_hessian(ABDSimData& sim_data,
-                                           gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+                                           GIPCTripletMatrix& global_triplets,
                                            muda::CBufferView<double3> vertex_barrier_gradient);
     void setup_abd_system_gradient_hessian(ABDSimData& sim_data,
-                                           gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+                                           GIPCTripletMatrix& global_triplets,
                                            muda::CBufferView<Vector3> vertex_barrier_gradient);
     void setup_abd_system_gradient_hessian(ABDSimData& sim_data,
                                            int*        fbtype,
                                            muda::CBufferView<double3> vertex_barrier_gradient,
-                                           gipc::GIPCTripletMatrix<double, 3>& global_triplets);
+                                           GIPCTripletMatrix& global_triplets);
 
     void _cal_abd_body_gradient_and_hessian(ABDSimData& sim_data);
     void _cal_abd_system_barrier_gradient(ABDSimData& sim_data,
@@ -200,7 +200,7 @@ class ABDSystem
     void _cal_abd_system_barrier_gradient(ABDSimData& sim_data,
                                           muda::CBufferView<Vector3> vertex_barrier_gradient);
     void _setup_abd_system_hessian(ABDSimData& sim_data,
-                                   gipc::GIPCTripletMatrix<double, 3>& global_triplets);
+                                   GIPCTripletMatrix& global_triplets);
     void _cal_abd_system_preconditioner(ABDSimData& sim_data);
 
     /********************************************************************************/

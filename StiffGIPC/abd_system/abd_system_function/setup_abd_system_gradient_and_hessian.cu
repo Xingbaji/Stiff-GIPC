@@ -158,7 +158,7 @@ __global__ void write_abd_body_hessian(
 
 
 void ABDSystem::setup_abd_system_gradient_hessian(ABDSimData& sim_data,
-                                                  gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+                                                  GIPCTripletMatrix& global_triplets,
                                                   muda::CBufferView<double3> vertex_barrier_gradient)
 {
     _cal_abd_body_gradient_and_hessian(sim_data);
@@ -167,7 +167,7 @@ void ABDSystem::setup_abd_system_gradient_hessian(ABDSimData& sim_data,
 }
 
 void ABDSystem::setup_abd_system_gradient_hessian(ABDSimData& sim_data,
-                                                  gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+                                                  GIPCTripletMatrix& global_triplets,
                                                   muda::CBufferView<Vector3> vertex_barrier_gradient)
 {
     _cal_abd_body_gradient_and_hessian(sim_data);
@@ -178,7 +178,7 @@ void ABDSystem::setup_abd_system_gradient_hessian(ABDSimData& sim_data,
 void ABDSystem::setup_abd_system_gradient_hessian(ABDSimData& sim_data,
                                                   int*        fbtype,
                                                   muda::CBufferView<double3> vertex_barrier_gradient,
-                                                  gipc::GIPCTripletMatrix<double, 3>& global_triplets)
+                                                  GIPCTripletMatrix& global_triplets)
 {
     fem_boundary_type = fbtype;
     setup_abd_system_gradient_hessian(sim_data, global_triplets, vertex_barrier_gradient);
@@ -438,7 +438,7 @@ void ABDSystem::_cal_abd_system_barrier_gradient(ABDSimData& sim_data,
 }
 
 void ABDSystem::_setup_abd_system_hessian(ABDSimData& sim_data,
-                                          gipc::GIPCTripletMatrix<double, 3>& global_triplets)
+                                          GIPCTripletMatrix& global_triplets)
 {
     gipc::Timer timer("_setup_abd_system_hessian");
     using namespace muda;

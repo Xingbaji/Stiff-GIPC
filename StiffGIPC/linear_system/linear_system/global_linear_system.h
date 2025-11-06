@@ -71,7 +71,7 @@ class GlobalLinearSystem
     gipc::SizeT solve_linear_system();
 
     Json as_json() const;
-    gipc::GIPCTripletMatrix<double, 3>* gipc_global_triplet = nullptr;
+    GIPCTripletMatrix* gipc_global_triplet = nullptr;
   private:
     GlobalLinearSystemOptions          m_options;
     std::vector<U<ILinearSubsystem>>   m_subsystems;

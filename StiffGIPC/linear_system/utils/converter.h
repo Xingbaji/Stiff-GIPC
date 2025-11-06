@@ -53,7 +53,7 @@ class Converter
 
   public:
     // Triplet -> BCOO
-    void convert(gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+    void convert(GIPCTripletMatrix& global_triplets,
                  const int&                          start,
                  const int&                          length,
                  const int&                          out_start_id);
@@ -66,7 +66,7 @@ class Converter
     void _radix_sort_indices_and_blocks(const muda::DeviceTripletMatrix<T, N>& from,
                                         muda::DeviceBCOOMatrix<T, N>& to);
 
-    void _radix_sort_indices_and_blocks(gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+    void _radix_sort_indices_and_blocks(GIPCTripletMatrix& global_triplets,
                                         const int& start,
                                         const int& length,
                                         const int& out_start_id);
@@ -79,7 +79,7 @@ class Converter
     void _make_unique_indices(const muda::DeviceTripletMatrix<T, N>& from,
                               muda::DeviceBCOOMatrix<T, N>&          to);
 
-    void _make_unique_indices(gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+    void _make_unique_indices(GIPCTripletMatrix& global_triplets,
                               const int& start,
                               const int& length,
                               const int& out_start_id);
@@ -93,7 +93,7 @@ class Converter
     void _make_unique_block_warp_reduction(const muda::DeviceTripletMatrix<T, N>& from,
                                      muda::DeviceBCOOMatrix<T, N>& to);
 
-    void _make_unique_block_warp_reduction(gipc::GIPCTripletMatrix<double, 3>& global_triplets,
+    void _make_unique_block_warp_reduction(GIPCTripletMatrix& global_triplets,
                                            const int& start,
                                            const int& length,
                                            const int& out_start_id);
@@ -117,7 +117,7 @@ class Converter
     }
 
     void ge2sym(muda::DeviceBCOOMatrix<T, N>& to);
-    void ge2sym(gipc::GIPCTripletMatrix<double, 3>& global_triplets);
+    void ge2sym(GIPCTripletMatrix& global_triplets);
     void sym2ge(const muda::DeviceBCOOMatrix<T, N>& from,
                 muda::DeviceBCOOMatrix<T, N>&       to);
 };

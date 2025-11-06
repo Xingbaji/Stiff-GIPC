@@ -1,7 +1,6 @@
 #include "linear_system/linear_system/global_matrix.h"
 #include "cuda_tools/cuda_tools.h"
-namespace gipc
-{
+
 
 __global__ void _set_hash_value(const int* row_ids,
                                 const int* col_ids,
@@ -36,8 +35,8 @@ __global__ void _set_hash_value(const int* row_ids,
 }
 
 
-//template <typename T, int M>
-void GIPCTripletMatrix<double, 3>::update_hash_value(int fem_offset)
+
+void GIPCTripletMatrix::update_hash_value(int fem_offset)
 {
     //reset_zero();
     int threadNum = 256;
@@ -61,4 +60,3 @@ void GIPCTripletMatrix<double, 3>::update_hash_value(int fem_offset)
                      global_collision_triplet_offset);
 }
 
-}  // namespace gipc
