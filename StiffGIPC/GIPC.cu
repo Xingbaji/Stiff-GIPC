@@ -8652,6 +8652,8 @@ void GIPC::init(double m_meanMass, double m_meanVolumn, double3 minConer, double
     long long unsigned total_max_global_triplet_num =
         total_internal_triplet_num * 2 + total_max_collision_triplet_num;
 
+    gipc_global_triplet.init_var();
+
     gipc_global_triplet.resize(global_matrix_block3_size,
                                   global_matrix_block3_size,
                                   total_max_global_triplet_num);
@@ -9988,11 +9990,15 @@ void GIPC::partitionContactHessian()
         (const uint32_t*)gipc_global_triplet.block_sort_index(),
         gipc_global_triplet.global_collision_triplet_offset);
 
-    gipc_global_triplet.d_abd_abd_contact_start_id = -1;
-    gipc_global_triplet.d_abd_fem_contact_start_id = -1;
-    gipc_global_triplet.d_fem_abd_contact_start_id = -1;
-    gipc_global_triplet.d_fem_fem_contact_start_id = -1;
+    //gipc_global_triplet.d_abd_abd_contact_start_id = -1;
+    //gipc_global_triplet.d_abd_fem_contact_start_id = -1;
+    //gipc_global_triplet.d_fem_abd_contact_start_id = -1;
+    //gipc_global_triplet.d_fem_fem_contact_start_id = -1;
 
+    CUDA_SAFE_CALL(cudaMemset(gipc_global_triplet.d_abd_abd_contact_start_id, -1, sizeof(int)));
+    CUDA_SAFE_CALL(cudaMemset(gipc_global_triplet.d_abd_fem_contact_start_id, -1, sizeof(int)));
+    CUDA_SAFE_CALL(cudaMemset(gipc_global_triplet.d_fem_abd_contact_start_id, -1, sizeof(int)));
+    CUDA_SAFE_CALL(cudaMemset(gipc_global_triplet.d_fem_fem_contact_start_id, -1, sizeof(int)));
 
     size_t shareMem = (threadNum + 1) * sizeof(int);
     LaunchCudaKernal_default(gipc_global_triplet.global_collision_triplet_offset,
@@ -10000,10 +10006,10 @@ void GIPC::partitionContactHessian()
                              shareMem,
                              _partition_collision_triplets,
                              (const uint64_t*)gipc_global_triplet.block_sort_hash_value(),
-                             gipc_global_triplet.d_abd_abd_contact_start_id.data(),
-                             gipc_global_triplet.d_abd_fem_contact_start_id.data(),
-                             gipc_global_triplet.d_fem_abd_contact_start_id.data(),
-                             gipc_global_triplet.d_fem_fem_contact_start_id.data(),
+                             gipc_global_triplet.d_abd_abd_contact_start_id,
+                             gipc_global_triplet.d_abd_fem_contact_start_id,
+                             gipc_global_triplet.d_fem_abd_contact_start_id,
+                             gipc_global_triplet.d_fem_fem_contact_start_id,
                              //abd_fem_count_info.abd_point_num,
                              gipc_global_triplet.global_collision_triplet_offset);
 
@@ -10018,22 +10024,22 @@ void GIPC::partitionContactHessian()
     //    gipc_global_triplet.d_fem_fem_contact_start_id;
 
     CUDA_SAFE_CALL(cudaMemcpy(&(gipc_global_triplet.h_abd_abd_contact_start_id),
-                              gipc_global_triplet.d_abd_abd_contact_start_id.data(),
+                              gipc_global_triplet.d_abd_abd_contact_start_id,
                               sizeof(int),
                               cudaMemcpyDeviceToHost));
 
     CUDA_SAFE_CALL(cudaMemcpy(&(gipc_global_triplet.h_abd_fem_contact_start_id),
-                              gipc_global_triplet.d_abd_fem_contact_start_id.data(),
+                              gipc_global_triplet.d_abd_fem_contact_start_id,
                               sizeof(int),
                               cudaMemcpyDeviceToHost));
 
     CUDA_SAFE_CALL(cudaMemcpy(&(gipc_global_triplet.h_fem_abd_contact_start_id),
-                              gipc_global_triplet.d_fem_abd_contact_start_id.data(),
+                              gipc_global_triplet.d_fem_abd_contact_start_id,
                               sizeof(int),
                               cudaMemcpyDeviceToHost));
 
     CUDA_SAFE_CALL(cudaMemcpy(&(gipc_global_triplet.h_fem_fem_contact_start_id),
-                              gipc_global_triplet.d_fem_fem_contact_start_id.data(),
+                              gipc_global_triplet.d_fem_fem_contact_start_id,
                               sizeof(int),
                               cudaMemcpyDeviceToHost));
 

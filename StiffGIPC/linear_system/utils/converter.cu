@@ -482,7 +482,7 @@ void Converter::_make_unique_indices(GIPCTripletMatrix& global_triplets,
     muda::DeviceRunLengthEncode().Encode(sort_key,
                                          unique_key,
                                          global_triplets.block_temp_buffer(),
-                                         global_triplets.d_unique_key_number.data(),
+                                         global_triplets.d_unique_key_number,
                                          length);
     //muda::DeviceRunLengthEncode().Encode(ij_pairs.data(),
     //                               unique_ij_pairs.data(),
@@ -493,7 +493,7 @@ void Converter::_make_unique_indices(GIPCTripletMatrix& global_triplets,
     //CUDA_SAFE_CALL(cudaDeviceSynchronize());
     //global_triplets.h_unique_key_number = global_triplets.d_unique_key_number;
     CUDA_SAFE_CALL(cudaMemcpy(&(global_triplets.h_unique_key_number),
-                              global_triplets.d_unique_key_number.data(),
+                              global_triplets.d_unique_key_number,
                               sizeof(int),
                               cudaMemcpyDeviceToHost));
     //std::vector<uint64_t> skey2;
@@ -1080,7 +1080,7 @@ void Converter::ge2sym(GIPCTripletMatrix& global_triplets)
                 col_indices,
                 counts,
                 offsets,
-                total_count = global_triplets.d_unique_key_number.data(),
+                total_count = global_triplets.d_unique_key_number,
                 number = global_triplets.h_unique_key_number] __device__(int i) mutable
                {
                    auto count  = counts[i];
@@ -1102,7 +1102,7 @@ void Converter::ge2sym(GIPCTripletMatrix& global_triplets)
 
 
     CUDA_SAFE_CALL(cudaMemcpy(&(global_triplets.h_unique_key_number),
-                              global_triplets.d_unique_key_number.data(),
+                              global_triplets.d_unique_key_number,
                               sizeof(int),
                               cudaMemcpyDeviceToHost));
     //global_triplets.resize_triplets(global_triplets.h_unique_key_number);

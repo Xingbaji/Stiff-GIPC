@@ -28,7 +28,7 @@ class GIPCTripletMatrix
 
   public:
     GIPCTripletMatrix()                                    = default;
-    ~GIPCTripletMatrix()                                   = default;
+    ~GIPCTripletMatrix() { free_var(); }
     GIPCTripletMatrix(const GIPCTripletMatrix&)            = default;
     GIPCTripletMatrix(GIPCTripletMatrix&&)                 = default;
     GIPCTripletMatrix& operator=(const GIPCTripletMatrix&) = default;
@@ -156,14 +156,32 @@ class GIPCTripletMatrix
     }
     int global_triplet_offset           = 0;
     int global_collision_triplet_offset = 0;
-    int global_external_max_capcity    = 0;
-    int global_internal_capcity = 0;
+    int global_external_max_capcity     = 0;
+    int global_internal_capcity         = 0;
 
-    cudatool::CudaDeviceVar<int> d_abd_abd_contact_start_id = -1;
-    cudatool::CudaDeviceVar<int> d_abd_fem_contact_start_id = -1;
-    cudatool::CudaDeviceVar<int> d_fem_abd_contact_start_id = -1;
-    cudatool::CudaDeviceVar<int> d_fem_fem_contact_start_id = -1;
-    cudatool::CudaDeviceVar<int> d_unique_key_number        = 0;
+    int* d_abd_abd_contact_start_id;
+    int* d_abd_fem_contact_start_id;
+    int* d_fem_abd_contact_start_id;
+    int* d_fem_fem_contact_start_id;
+    int* d_unique_key_number;
+
+    void init_var()
+    {
+        CUDA_SAFE_CALL(cudaMalloc((void**)&d_abd_abd_contact_start_id, sizeof(int)));
+        CUDA_SAFE_CALL(cudaMalloc((void**)&d_abd_fem_contact_start_id, sizeof(int)));
+        CUDA_SAFE_CALL(cudaMalloc((void**)&d_fem_abd_contact_start_id, sizeof(int)));
+        CUDA_SAFE_CALL(cudaMalloc((void**)&d_fem_fem_contact_start_id, sizeof(int)));
+        CUDA_SAFE_CALL(cudaMalloc((void**)&d_unique_key_number, sizeof(int)));
+    }
+
+    void free_var()
+    {
+        CUDA_SAFE_CALL(cudaFree(d_abd_abd_contact_start_id));
+        CUDA_SAFE_CALL(cudaFree(d_abd_fem_contact_start_id));
+        CUDA_SAFE_CALL(cudaFree(d_fem_abd_contact_start_id));
+        CUDA_SAFE_CALL(cudaFree(d_fem_fem_contact_start_id));
+        CUDA_SAFE_CALL(cudaFree(d_unique_key_number));
+    }
 
     int h_abd_abd_contact_start_id = -1;
     int h_abd_fem_contact_start_id = -1;
