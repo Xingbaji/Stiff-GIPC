@@ -193,64 +193,64 @@ CudaDeviceBuffer<T>::~CudaDeviceBuffer()
 /// </summary>
 /// <typeparam name="T"></typeparam>
 
-template <typename T>
-CudaDeviceVar<T>::CudaDeviceVar()
-{
-    CUDA_SAFE_CALL(cudaMalloc((void**)&m_data, sizeof(T)));
-}
-
-template <typename T>
-CudaDeviceVar<T>::CudaDeviceVar(const T& value)
-{
-    CUDA_SAFE_CALL(cudaMalloc((void**)&m_data, sizeof(T)));
-    CUDA_SAFE_CALL(cudaMemcpy(m_data, &value, sizeof(T), cudaMemcpyHostToDevice));
-}
-
-template <typename T>
-CudaDeviceVar<T>::CudaDeviceVar(const CudaDeviceVar& other)
-{
-    CUDA_SAFE_CALL(cudaMalloc((void**)&m_data, sizeof(T)));
-    CUDA_SAFE_CALL(cudaMemcpy(m_data, other.data(), sizeof(T), cudaMemcpyDeviceToDevice));
-}
-
-template <typename T>
-CudaDeviceVar<T>::CudaDeviceVar(CudaDeviceVar&& other) noexcept
-    : m_data(other.data())
-{
-    other.clear();
-}
-
-template <typename T>
-CudaDeviceVar<T>& CudaDeviceVar<T>::operator=(const CudaDeviceVar<T>& other)
-{
-    if(this == &other)
-        return *this;
-    CUDA_SAFE_CALL(cudaMemcpy(m_data, other.data(), sizeof(T), cudaMemcpyDeviceToDevice));
-    return *this;
-}
-
-template <typename T>
-CudaDeviceVar<T>& CudaDeviceVar<T>::operator=(CudaDeviceVar<T>&& other)
-{
-    if(this == &other)
-        return *this;
-
-    if(m_data)
-        CUDA_SAFE_CALL(cudaFree(m_data));
-
-    m_data = other.data();
-
-    other.clear();
-
-    return *this;
-}
-
-template <typename T>
-CudaDeviceVar<T>& CudaDeviceVar<T>::operator=(const T& val)
-{
-    CUDA_SAFE_CALL(cudaMemcpy(m_data, &val, sizeof(T), cudaMemcpyHostToDevice));
-    return *this;
-}
+//template <typename T>
+//CudaDeviceVar<T>::CudaDeviceVar()
+//{
+//    CUDA_SAFE_CALL(cudaMalloc((void**)&m_data, sizeof(T)));
+//}
+//
+//template <typename T>
+//CudaDeviceVar<T>::CudaDeviceVar(const T& value)
+//{
+//    CUDA_SAFE_CALL(cudaMalloc((void**)&m_data, sizeof(T)));
+//    CUDA_SAFE_CALL(cudaMemcpy(m_data, &value, sizeof(T), cudaMemcpyHostToDevice));
+//}
+//
+//template <typename T>
+//CudaDeviceVar<T>::CudaDeviceVar(const CudaDeviceVar& other)
+//{
+//    CUDA_SAFE_CALL(cudaMalloc((void**)&m_data, sizeof(T)));
+//    CUDA_SAFE_CALL(cudaMemcpy(m_data, other.data(), sizeof(T), cudaMemcpyDeviceToDevice));
+//}
+//
+//template <typename T>
+//CudaDeviceVar<T>::CudaDeviceVar(CudaDeviceVar&& other) noexcept
+//    : m_data(other.data())
+//{
+//    other.clear();
+//}
+//
+//template <typename T>
+//CudaDeviceVar<T>& CudaDeviceVar<T>::operator=(const CudaDeviceVar<T>& other)
+//{
+//    if(this == &other)
+//        return *this;
+//    CUDA_SAFE_CALL(cudaMemcpy(m_data, other.data(), sizeof(T), cudaMemcpyDeviceToDevice));
+//    return *this;
+//}
+//
+//template <typename T>
+//CudaDeviceVar<T>& CudaDeviceVar<T>::operator=(CudaDeviceVar<T>&& other)
+//{
+//    if(this == &other)
+//        return *this;
+//
+//    if(m_data)
+//        CUDA_SAFE_CALL(cudaFree(m_data));
+//
+//    m_data = other.data();
+//
+//    other.clear();
+//
+//    return *this;
+//}
+//
+//template <typename T>
+//CudaDeviceVar<T>& CudaDeviceVar<T>::operator=(const T& val)
+//{
+//    CUDA_SAFE_CALL(cudaMemcpy(m_data, &val, sizeof(T), cudaMemcpyHostToDevice));
+//    return *this;
+//}
 
 //template <typename T>
 //CudaDeviceVar<T>::operator T() const
@@ -259,10 +259,10 @@ CudaDeviceVar<T>& CudaDeviceVar<T>::operator=(const T& val)
 //    CUDA_SAFE_CALL(cudaMemcpy(&value, m_data, sizeof(T), cudaMemcpyDeviceToHost));
 //    return value;
 //}
-template <typename T>
-CudaDeviceVar<T>::~CudaDeviceVar()
-{
-    CUDA_SAFE_CALL(cudaFree(m_data));
-}
+//template <typename T>
+//CudaDeviceVar<T>::~CudaDeviceVar()
+//{
+//    CUDA_SAFE_CALL(cudaFree(m_data));
+//}
 }  // namespace cudatool
 

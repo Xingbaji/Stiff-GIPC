@@ -58,31 +58,31 @@ class CudaDeviceBuffer
 };
 
 
-template <typename T>
-class CudaDeviceVar
-{
-  private:
-    T* m_data;
-
-  public:
-    using value_type = T;
-
-    CudaDeviceVar();
-    ~CudaDeviceVar();
-    CudaDeviceVar(const T& value);
-
-    CudaDeviceVar(const CudaDeviceVar& other);
-    CudaDeviceVar(CudaDeviceVar&& other) noexcept;
-    CudaDeviceVar& operator=(const CudaDeviceVar<T>& other);
-    CudaDeviceVar& operator=(CudaDeviceVar<T>&& other);
-
-    CudaDeviceVar& operator=(const T& val);  // copy from host
-    //operator T() const;                      // copy to host
-    T*       data() noexcept { return m_data; }
-    const T* data() const noexcept { return m_data; }
-    void clear() { m_data = nullptr; }
-    
-};
+//template <typename T>
+//class CudaDeviceVar
+//{
+//  private:
+//    T* m_data;
+//
+//  public:
+//    using value_type = T;
+//
+//    CudaDeviceVar();
+//    ~CudaDeviceVar();
+//    CudaDeviceVar(const T& value);
+//
+//    CudaDeviceVar(const CudaDeviceVar& other);
+//    CudaDeviceVar(CudaDeviceVar&& other) noexcept;
+//    CudaDeviceVar& operator=(const CudaDeviceVar<T>& other);
+//    CudaDeviceVar& operator=(CudaDeviceVar<T>&& other);
+//
+//    CudaDeviceVar& operator=(const T& val);  // copy from host
+//    //operator T() const;                      // copy to host
+//    T*       data() noexcept { return m_data; }
+//    const T* data() const noexcept { return m_data; }
+//    void clear() { m_data = nullptr; }
+//    
+//};
 
 }  // namespace cudatool
 
