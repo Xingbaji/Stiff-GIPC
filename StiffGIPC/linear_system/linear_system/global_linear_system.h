@@ -1,7 +1,3 @@
-//
-// created by Xinyu Lu on 2024/4/3
-// Copyright (c) 2024 Xinyu Lu. All rights reserved.
-//
 #pragma once
 #include <list>
 #include <linear_system/utils/spmv.h>
@@ -10,7 +6,6 @@
 #include <linear_system/linear_system/i_linear_system_solver.h>
 #include <linear_system/linear_system/i_preconditioner.h>
 #include <muda/ext/linear_system.h>
-#include <linear_system/linear_system/global_linear_system_options.h>
 #include <gipc/utils/json.h>
 
 
@@ -26,8 +21,7 @@ class GlobalLinearSystem
     friend class LocalPreconditioner;
 
   public:
-    GlobalLinearSystem(const GlobalLinearSystemOptions& options)
-        : m_options{options}
+    GlobalLinearSystem()
     {
     }
 
@@ -73,10 +67,8 @@ class GlobalLinearSystem
     Json as_json() const;
     GIPCTripletMatrix* gipc_global_triplet = nullptr;
   private:
-    GlobalLinearSystemOptions          m_options;
     std::vector<U<ILinearSubsystem>>   m_subsystems;
     std::vector<DiagonalSubsystem*>    m_inner_subsystems;
-    std::vector<OffDiagonalSubsystem*> m_coupling_subsystems;
 
     std::vector<U<LocalPreconditioner>> m_local_preconditioners;
     U<GlobalPreconditioner>             m_global_preconditioner;
@@ -114,7 +106,6 @@ class GlobalLinearSystem
     void spmv(Float a, muda::CDenseVectorView<Float> x, Float b, muda::DenseVectorView<Float> y);
 
     DiagonalSubsystem& _create_subsystem(U<DiagonalSubsystem>&& subsystem);
-    OffDiagonalSubsystem& _create_subsystem(U<OffDiagonalSubsystem>&& subsystem);
 
     IterativeSolver& _create_solver(U<IterativeSolver>&& solver);
     LocalPreconditioner& _create_preconditioner(U<LocalPreconditioner>&& preconditioner);

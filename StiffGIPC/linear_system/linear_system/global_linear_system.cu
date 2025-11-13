@@ -10,15 +10,10 @@ bool GlobalLinearSystem::build_linear_system()
     auto hessian_provider_count  = m_subsystems.size();
     auto gradient_provider_count = m_inner_subsystems.size();
 
-    // hessian can be provided by both LinearSubsystem and LinearCouplingSubsystem
-    m_triplet_count_per_subsystem.resize(hessian_provider_count);
-    m_triplet_offset_per_subsystem.resize(hessian_provider_count);
-
     // right hand side can only be provided by both LinearSubsystem
     m_rhs_count_per_subsystem.resize(gradient_provider_count);
     m_rhs_offset_per_subsystem.resize(gradient_provider_count);
 
-    // collect the information of each subsystem
     for(auto& subsystem : m_subsystems)
         subsystem->report_subsystem_info();
 
@@ -28,19 +23,6 @@ bool GlobalLinearSystem::build_linear_system()
         m_rhs_count_per_subsystem[i] = gp->right_hand_side_dof();
     }
 
-    for(auto& hp : m_subsystems)
-    {
-        auto i                           = hp->hid();
-        m_triplet_count_per_subsystem[i] = hp->hessian_block_count();
-    }
-
-    // compute the triplet offset for each subsystem
-    std::exclusive_scan(m_triplet_count_per_subsystem.begin(),
-                        m_triplet_count_per_subsystem.end(),
-                        m_triplet_offset_per_subsystem.begin(),
-                        0);
-
-    // compute the rhs offset for each subsystem
     std::exclusive_scan(m_rhs_count_per_subsystem.begin(),
                         m_rhs_count_per_subsystem.end(),
                         m_rhs_offset_per_subsystem.begin(),
@@ -52,36 +34,25 @@ bool GlobalLinearSystem::build_linear_system()
         gp->dof_offset(m_rhs_offset_per_subsystem[i]);
     }
 
-    for(auto& hp : m_subsystems)
-    {
-        auto i = hp->hid();
-        hp->hessian_block_offset(m_triplet_offset_per_subsystem[i]);
-    }
-
-    // get the total number of triplets and right hand side dofs
-    auto total_triplet_count = m_triplet_offset_per_subsystem.back()
-                               + m_triplet_count_per_subsystem.back();
     auto total_rhs_count =
         m_rhs_offset_per_subsystem.back() + m_rhs_count_per_subsystem.back();
 
-    if(total_triplet_count == 0 || total_rhs_count == 0)
+
+    if(gipc_global_triplet->global_triplet_offset == 0 || total_rhs_count == 0)
     {
         std::cout << "The global linear system is empty, skip *assembling, *solving and *solution distributing phase."
                   << std::endl;
         return false;
     }
 
-    // allocate the memory for the linear system
-    m_triplet_A.reshape(total_rhs_count / BlockSize, total_rhs_count / BlockSize);
+
     m_b.resize(total_rhs_count);
     m_x.resize(total_rhs_count);
 
-    // assemble linear subsystems
-    auto triplet_view = m_triplet_A.view();
-    auto rhs_view     = m_b.view();
+    auto rhs_view = m_b.view();
 
     for(auto& subsystem : m_subsystems)
-        subsystem->do_assemble(triplet_view, rhs_view);
+        subsystem->do_assemble(rhs_view);
 
     int start_preconditioner_id = 0;
     if(m_local_preconditioners.size() && m_local_preconditioners[0]->preconditioner_id == 0)
@@ -91,7 +62,6 @@ bool GlobalLinearSystem::build_linear_system()
     }
     convert_new();
 
-    // assemble preconditioners
     if(m_global_preconditioner)
         m_global_preconditioner->do_assemble(*gipc_global_triplet);
 
@@ -126,18 +96,7 @@ DiagonalSubsystem& GlobalLinearSystem::_create_subsystem(U<DiagonalSubsystem>&& 
     return *ptr;
 }
 
-OffDiagonalSubsystem& GlobalLinearSystem::_create_subsystem(U<OffDiagonalSubsystem>&& subsystem)
-{
-    auto ptr = subsystem.get();
-    ptr->gid(~0);
-    m_coupling_subsystems.push_back(ptr);  // push to gradient providers
 
-    ptr->hid(m_subsystems.size());
-    ptr->system(*this);
-    m_subsystems.emplace_back(std::move(subsystem));
-
-    return *ptr;
-}
 
 IterativeSolver& GlobalLinearSystem::_create_solver(U<IterativeSolver>&& solver)
 {
@@ -234,147 +193,20 @@ void GlobalLinearSystem::convert_new()
 }
 
 
-void GlobalLinearSystem::convert()
-{
-    auto triplet2bcoo = [&]
-    {
-        if(reserved_triplet_count < m_triplet_A.triplet_count())
-        {
-            reserved_triplet_count = m_triplet_A.triplet_count() * 1.5;
-            m_bcoo_A.reserve_triplets(reserved_triplet_count);
-            m_triplet_A.reserve_triplets(reserved_triplet_count);
-        }
 
-        if(m_options.convert_algorithm == ConvertAlgorithm::MudaBuiltIn)
-            m_context.convert(m_triplet_A, m_bcoo_A);
-        else if(m_options.convert_algorithm == ConvertAlgorithm::NewConverter)
-            m_converter.convert(m_triplet_A, m_bcoo_A);
-    };
-
-    //m_converter.convert(*gipc_global_triplet,
-    //                    0,
-    //                    gipc_global_triplet->global_triplet_offset,
-    //                    gipc_global_triplet->global_triplet_offset);
-    //m_converter.ge2sym(*gipc_global_triplet);
-    auto bcoo2bsr = [&]
-    {
-        if(reserved_triplet_count < m_bcoo_A.triplet_count())
-        {
-            reserved_triplet_count = m_bcoo_A.triplet_count() * 1.5;
-            m_bsr_A.reserve(reserved_triplet_count / 4);
-        }
-
-        if(m_options.convert_algorithm == ConvertAlgorithm::MudaBuiltIn)
-            m_context.convert(m_bcoo_A, m_bsr_A);
-        else if(m_options.convert_algorithm == ConvertAlgorithm::NewConverter)
-            m_converter.convert(m_bcoo_A, m_bsr_A);
-    };
-
-    auto bcoo2symbcoo = [&] { m_converter.ge2sym(m_bcoo_A); };
-
-    auto symbcoo2bcoo = [&]
-    {
-        m_converter.sym2ge(m_bcoo_A, fake_bcoo_A);
-        m_bcoo_A = std::move(fake_bcoo_A);
-    };
-
-    switch(m_options.spmv_algorithm)
-    {
-        case SPMVAlgorithm::BSR: {
-            {
-                gipc::Timer timer{"triplet->bcoo "};
-                triplet2bcoo();
-                // bcoo2symbcoo();
-                // symbcoo2bcoo();
-            }
-
-            {
-                gipc::Timer timer{"bcoo->bsr"};
-                bcoo2bsr();
-            }
-        }
-        break;
-        case SPMVAlgorithm::BCOO:
-        case SPMVAlgorithm::WarpReduceBCOO: {
-            gipc::Timer timer{"triplet->bcoo"};
-            triplet2bcoo();
-        }
-        break;
-        case SPMVAlgorithm::Triplet: {
-            // if we have global preconditioner
-            // we need to convert the Triplet matrix to BCOO matrix
-            // for global preconditioner assembly
-            if(m_global_preconditioner)
-            {
-                gipc::Timer timer{"triplet->bcoo"};
-                triplet2bcoo();
-            }
-        }
-        break;
-        case SPMVAlgorithm::SymBCOO:
-        case SPMVAlgorithm::SymWarpReduceBCOO: {
-            gipc::Timer timer{"triplet->bcoo"};
-            triplet2bcoo();
-            bcoo2symbcoo();
-        }
-        default:
-            break;
-    }
-}
 void GlobalLinearSystem::spmv(Float                         a,
                               muda::CDenseVectorView<Float> x,
                               Float                         b,
                               muda::DenseVectorView<Float>  y)
 {
-    // fake_y.resize(y.size());
-    switch(m_options.spmv_algorithm)
-    {
-        case SPMVAlgorithm::BSR: {
-            {
-                Timer timer{"bsr_spmv"};
-                m_context.spmv<Float, 3>(a, m_bsr_A, x, b, y);
-            }
-            //{
-            //    Timer timer{"warp_reduce_spmv"};
-            //    // use fake_y to store the result of bsr_spmv
-            //    m_spmv.warp_reduce_spmv2(a, m_bcoo_A, x, b, fake_y);
-            //}
-        }
-        break;
-        case SPMVAlgorithm::BCOO: {
-            Timer timer{"bcoo_spmv"};
-            m_context.spmv<Float, 3>(a, m_bcoo_A, x, b, y);
-        }
-        break;
-        case SPMVAlgorithm::Triplet: {
-            Timer timer{"triplet_spmv"};
-            m_context.spmv<Float, 3>(a, m_triplet_A, x, b, y);
-        }
-        break;
-        case SPMVAlgorithm::SymBCOO: {
-            Timer timer{"sym_bcoo_spmv"};
-            m_spmv.sym_spmv(a, m_bcoo_A, x, b, y);
-        }
-        break;
-        case SPMVAlgorithm::WarpReduceBCOO: {
-            Timer timer{"warp_reduce_spmv"};
-            m_spmv.warp_reduce_spmv(a, m_bcoo_A, x, b, y);
-        }
-        break;
-        case SPMVAlgorithm::SymWarpReduceBCOO: {
-            Timer timer{"warp_reduce_sym_spmv"};
-            m_spmv.warp_reduce_sym_spmv(a,
-                                        gipc_global_triplet->block_values(),
-                                        gipc_global_triplet->block_row_indices(),
-                                        gipc_global_triplet->block_col_indices(),
-                                        gipc_global_triplet->h_unique_key_number,
-                                        x,
-                                        b,
-                                        y);
-        }
-        break;
-        default:
-            break;
-    }
+
+    m_spmv.warp_reduce_sym_spmv(a,
+                                gipc_global_triplet->block_values(),
+                                gipc_global_triplet->block_row_indices(),
+                                gipc_global_triplet->block_col_indices(),
+                                gipc_global_triplet->h_unique_key_number,
+                                x,
+                                b,
+                                y);
 }
 }  // namespace gipc

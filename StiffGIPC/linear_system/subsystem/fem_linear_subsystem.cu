@@ -53,11 +53,6 @@ muda::BufferView<double> FEMLinearSubsystem::mass() const
 
 void FEMLinearSubsystem::report_subsystem_info()
 {
-    size_t hessian_block_count = m_gipc.gipc_global_triplet.global_triplet_offset
-                                 - m_gipc.gipc_global_triplet.global_collision_triplet_offset
-        + m_gipc.gipc_global_triplet.fem_fem_contact_num;
-
-    this->hessian_block_count(hessian_block_count);
     this->right_hand_side_dof(dx().size() * 3);
 }
 
@@ -112,69 +107,34 @@ namespace details
 }  // namespace details
 
 
-void FEMLinearSubsystem::assemble(TripletMatrixView hessian, DenseVectorView gradient)
+void FEMLinearSubsystem::assemble(DenseVectorView gradient)
 {
     using namespace muda;
 
     if(m_gipc.abd_fem_count_info.fem_point_num < 1)
         return;
 
-    auto barrier_gradient   = this->barrier_gradient();
-    auto shape_gradient     = this->shape_gradient();
-    //auto fem_point_offset   = m_gipc.abd_fem_count_info.fem_point_offset;
+    auto barrier_gradient = this->barrier_gradient();
+    auto shape_gradient   = this->shape_gradient();
 
-
-    {  // gradient = contact_gradient + shape_gradient
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(barrier_gradient.size(),
-                   [b     = barrier_gradient.viewer().name("barrier_gradient"),
-                    s     = shape_gradient.viewer().name("shape_gradient"),
-                    btype = boundary_type().cviewer().name("boundary_type"),
-                    gradient = gradient.viewer().name("gradient")] __device__(int i) mutable
+    ParallelFor()
+        .file_line(__FILE__, __LINE__)
+        .apply(barrier_gradient.size(),
+               [b     = barrier_gradient.viewer().name("barrier_gradient"),
+                s     = shape_gradient.viewer().name("shape_gradient"),
+                btype = boundary_type().cviewer().name("boundary_type"),
+                gradient = gradient.viewer().name("gradient")] __device__(int i) mutable
+               {
+                   if(btype(i) != 0)
                    {
-                       if(btype(i) != 0)
-                       {
-                           gradient.segment<3>(i * 3).as_eigen() = Vector3::Zero();
-                       }
-                       else
-                       {
-                           gradient.segment<3>(i * 3).as_eigen() =
-                               eigen::as_eigen(b(i)) + eigen::as_eigen(s(i));
-                       }
-
-                   });
-    }
-    //return;
-    /*auto offset     = 0;
-    auto count      = m_gipc.gipc_global_triplet.fem_fem_contact_num;
-    int abd_offset = m_gipc.abd_fem_count_info.abd_body_num * 4;
-    
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(count,
-               [triplet_b = m_gipc.gipc_global_triplet.block_values(m_gipc.gipc_global_triplet.h_fem_fem_contact_start_id),
-                rows = m_gipc.gipc_global_triplet.block_row_indices(m_gipc.gipc_global_triplet.h_fem_fem_contact_start_id),
-                cols = m_gipc.gipc_global_triplet.block_col_indices(m_gipc.gipc_global_triplet.h_fem_fem_contact_start_id),
-                abd_offset,
-                hessian = hessian.subview(offset, count).viewer().name("hessian")] __device__(int i) mutable
-               {
-                   hessian(i).write(rows[i] - abd_offset, cols[i] - abd_offset, triplet_b[i]);
+                       gradient.segment<3>(i * 3).as_eigen() = Vector3::Zero();
+                   }
+                   else
+                   {
+                       gradient.segment<3>(i * 3).as_eigen() =
+                           eigen::as_eigen(b(i)) + eigen::as_eigen(s(i));
+                   }
                });
-
-    offset += m_gipc.gipc_global_triplet.fem_fem_contact_num;
-    count = m_gipc.gipc_global_triplet.global_triplet_offset - m_gipc.gipc_global_triplet.global_collision_triplet_offset;
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(count,
-               [triplet_b = m_gipc.gipc_global_triplet.block_values(m_gipc.gipc_global_triplet.global_collision_triplet_offset),
-                rows = m_gipc.gipc_global_triplet.block_row_indices(m_gipc.gipc_global_triplet.global_collision_triplet_offset),
-                cols = m_gipc.gipc_global_triplet.block_col_indices(m_gipc.gipc_global_triplet.global_collision_triplet_offset),
-                abd_offset,
-                hessian = hessian.subview(offset, count).viewer().name("hessian")] __device__(int i) mutable
-               {
-                   hessian(i).write(rows[i] - abd_offset, cols[i] - abd_offset, triplet_b[i]);
-               });*/
 }
 
 void FEMLinearSubsystem::retrieve_solution(CDenseVectorView dx)

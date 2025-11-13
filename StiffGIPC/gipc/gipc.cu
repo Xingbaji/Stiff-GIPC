@@ -27,13 +27,8 @@ void GIPC::build_gipc_system(device_TetraData& tet)
     m_abd_system->parms.motor_strength = json["motor_strength"].get<double>();
 
     std::cout << "- create Global Linear System ..." << std::endl;
-    gipc::GlobalLinearSystemOptions options;
-    {
-        options.spmv_algorithm = gipc::SPMVAlgorithm::SymWarpReduceBCOO;
 
-        options.convert_algorithm = gipc::ConvertAlgorithm::NewConverter;
-    }
-    m_global_linear_system = std::make_unique<gipc::GlobalLinearSystem>(options);
+    m_global_linear_system = std::make_unique<gipc::GlobalLinearSystem>();
 
     std::cout << "* Finished building GIPC system." << std::endl;
 }

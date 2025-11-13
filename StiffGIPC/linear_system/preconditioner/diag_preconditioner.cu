@@ -93,13 +93,6 @@ namespace details
     }
 }  // namespace details
 
-//void DiagPreconditioner::assemble(muda::CBCOOMatrixView<gipc::Float, 3> hessian)
-//{
-//    gipc::Timer timer{"precomputing Preconditioner"};
-//    auto cols = hessian.total_block_cols();
-//    m_diag3x3.resize(cols);
-//    details::diag_assemble(m_diag3x3.view(), hessian);
-//}
 
 void DiagPreconditioner::assemble(GIPCTripletMatrix& global_triplets)
 {

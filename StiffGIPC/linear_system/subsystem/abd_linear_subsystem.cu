@@ -17,17 +17,10 @@ ABDLinearSubsystem::ABDLinearSubsystem(GIPC&          gipc,
 
 void ABDLinearSubsystem::report_subsystem_info()
 {
-    // H12x12 -> 16 * H3x3
-    auto h3x3_count = m_abd_system.global_triplet->abd_abd_contact_num;  //16 * m_abd_system.bcoo_hessian.non_zero_blocks();
-
-    hessian_block_count(h3x3_count);
-    //std::cout << "ABDLinearSubsystem::report_subsystem_info: h3x3_count = " << h3x3_count
-    //          << " gradient_dof_count = " << m_abd_system.system_gradient.size()
-    //          << std::endl;
     right_hand_side_dof(m_abd_system.system_gradient.size());
 }
 
-void ABDLinearSubsystem::assemble(TripletMatrixView hessian, DenseVectorView gradient)
+void ABDLinearSubsystem::assemble(DenseVectorView gradient)
 {
     if(m_gipc.abd_fem_count_info.abd_body_num < 1)
         return;
@@ -39,39 +32,6 @@ void ABDLinearSubsystem::assemble(TripletMatrixView hessian, DenseVectorView gra
                 src = m_abd_system.system_gradient.viewer().name(
                     "system_gradient")] __device__(int i) mutable
                { dst(i) = src(i); });
-
-    //return;
-    //ParallelFor()
-    //    .file_line(__FILE__, __LINE__)
-    //    .apply(m_abd_system.global_triplet->abd_abd_contact_num,
-    //           [dst      = hessian.viewer().name("hessian"),
-    //            src_trip =
-    //                m_abd_system.global_triplet->block_values(m_abd_system.global_triplet->h_abd_abd_contact_start_id),
-    //            src_col = m_abd_system.global_triplet->block_col_indices(
-    //                m_abd_system.global_triplet->h_abd_abd_contact_start_id),
-    //            src_row = m_abd_system.global_triplet->block_row_indices(
-    //                m_abd_system.global_triplet->h_abd_abd_contact_start_id)] __device__(int I) mutable
-    //           {
-    //               dst(I).write(src_row[I], src_col[I], src_trip[I]);
-    //           });
-
-
-    //ParallelFor()
-    //    .file_line(__FILE__, __LINE__)
-    //    .apply(m_abd_system.bcoo_hessian.non_zero_blocks(),
-    //           [dst = hessian.viewer().name("hessian"),
-    //            src = m_abd_system.bcoo_hessian.cviewer().name("bcoo_hessian")] __device__(int I) mutable
-    //           {
-    //               auto offset = I * 16;
-    //               for(int i = 0; i < 4; ++i)
-    //                   for(int j = 0; j < 4; ++j)
-    //                   {
-    //                       auto&& [row, col, H12x12] = src(I);
-    //                       dst(offset++).write(row * 4 + i,
-    //                                           col * 4 + j,
-    //                                           H12x12.block<3, 3>(3 * i, 3 * j));
-    //                   }
-    //           });
 }
 
 void ABDLinearSubsystem::retrieve_solution(CDenseVectorView dx)

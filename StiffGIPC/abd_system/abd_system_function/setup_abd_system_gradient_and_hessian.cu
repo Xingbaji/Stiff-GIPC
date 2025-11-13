@@ -450,14 +450,11 @@ void ABDSystem::_setup_abd_system_hessian(ABDSimData& sim_data,
     global_triplets.abd_abd_contact_num = bcooNum;
     int new_triplet_offset =
         global_triplets.fem_fem_contact_num + global_triplets.abd_fem_contact_num * 4
-        + global_triplets.fem_abd_contact_num * 4
         + (global_triplets.abd_abd_contact_num * 16 + abd_body_count * 10);
 
     int h_abd_fem_contact_start_id = global_triplets.fem_fem_contact_num;
-    int h_fem_abd_contact_start_id =
-        h_abd_fem_contact_start_id + global_triplets.abd_fem_contact_num * 4;
     int h_abd_abd_contact_start_id =
-        h_fem_abd_contact_start_id + global_triplets.fem_abd_contact_num * 4;
+        h_abd_fem_contact_start_id + global_triplets.abd_fem_contact_num * 4;
 
 
     int write_offset = 0;
@@ -523,114 +520,67 @@ void ABDSystem::_setup_abd_system_hessian(ABDSimData& sim_data,
 
         ParallelFor()
             .kernel_name(__FUNCTION__)
-            .apply(
-                global_triplets.abd_fem_contact_num,
-                [point_to_body = unique_point_id_to_body_id.cviewer().name("body_id"),
-                 btype = femb_type.cviewer().name("boundary_type"),
-                 Js = sim_data.device.unique_point_id_to_J.cviewer().name("Js"),
-                 triplet_out = global_triplets.block_values() + new_triplet_offset,
-                 row_out = global_triplets.block_row_indices() + new_triplet_offset,
-                 col_out = global_triplets.block_col_indices() + new_triplet_offset,
-                 abd_fem_contact = global_triplets.block_values()
+            .apply(global_triplets.abd_fem_contact_num,
+                   [point_to_body = unique_point_id_to_body_id.cviewer().name("body_id"),
+                    btype = femb_type.cviewer().name("boundary_type"),
+                    Js = sim_data.device.unique_point_id_to_J.cviewer().name("Js"),
+                    triplet_out = global_triplets.block_values() + new_triplet_offset,
+                    row_out = global_triplets.block_row_indices() + new_triplet_offset,
+                    col_out = global_triplets.block_col_indices() + new_triplet_offset,
+                    abd_fem_contact = global_triplets.block_values()
+                                      + global_triplets.h_abd_fem_contact_start_id,
+
+                    abd_fem_rows = global_triplets.block_row_indices()
                                    + global_triplets.h_abd_fem_contact_start_id,
+                    abd_fem_cols = global_triplets.block_col_indices()
+                                   + global_triplets.h_abd_fem_contact_start_id,
+                    h_abd_fem_contact_start_id,
+                    is_fixed = body_id_is_fixed.cviewer().name("is_fixed"),
+                    abd_body_count,
+                    fem_point_offset] __device__(int I) mutable
+                   {
+                       // 1. process upper : ABD-FEM
+                       {
+                           auto abd_fem_H3x3 = abd_fem_contact[I];
+                           auto i_abd = abd_fem_rows[I];  // global point id
+                           auto j_fem = abd_fem_cols[I];  // global point id
 
-                 abd_fem_rows = global_triplets.block_row_indices()
-                                + global_triplets.h_abd_fem_contact_start_id,
-                 abd_fem_cols = global_triplets.block_col_indices()
-                                + global_triplets.h_abd_fem_contact_start_id,
-                 h_abd_fem_contact_start_id,
+                           auto local_fem_point_id = j_fem - fem_point_offset;
 
-                 /*fem_abd_contact = global_triplets.block_values()
-                                   + global_triplets.h_fem_abd_contact_start_id,*/
+                           auto body_id = point_to_body(i_abd);  // global body id
 
-                 fem_abd_rows = global_triplets.block_row_indices()
-                                + global_triplets.h_fem_abd_contact_start_id,
-                 fem_abd_cols = global_triplets.block_col_indices()
-                                + global_triplets.h_fem_abd_contact_start_id,
-                 h_fem_abd_contact_start_id,
-                 is_fixed = body_id_is_fixed.cviewer().name("is_fixed"),
-                 //new_triplet_offset,
-                 abd_body_count,
-                 fem_point_offset] __device__(int I) mutable
-                {
-                    // 1. process upper : ABD-FEM
-                    {
-                        auto abd_fem_H3x3 = abd_fem_contact[I];
-                        auto i_abd        = abd_fem_rows[I];  // global point id
-                        auto j_fem        = abd_fem_cols[I];  // global point id
-                        //if(btype(j_fem) == 0)
-                        {
+                           auto local_abd_body_id = body_id;  // - abd_body_offset;
+                           auto local_abd_point_id = i_abd;  // - abd_point_offset;
+                           //tex: $\mathbf{J}_{3\times 12}$
+                           gipc::ABDJacobi J = Js(local_abd_point_id);
+                           gipc::Matrix12x3 H = J.to_mat().transpose() * abd_fem_H3x3;
+                           //tex:
+                           //$$
+                           // \mathbf{H} = \begin{bmatrix}
+                           //  \mathbf{H}_{1} \\ \mathbf{H}_{2} \\ \mathbf{H}_{3} \\ \mathbf{H}_{4}
+                           //\end{bmatrix}
+                           //$$
+                           auto offset = 4 * I;
+                           if(btype(local_fem_point_id) != 0
+                              || is_fixed(body_id) == BodyBoundaryType::Fixed)
+                           {
+                               H.setZero();
+                           }
+                           for(int i = 0; i < 4; ++i)
+                           {
+                               triplet_out[h_abd_fem_contact_start_id + I * 4 + i] =
+                                   H.block<3, 3>(i * 3, 0);
+                               row_out[h_abd_fem_contact_start_id + I * 4 + i] =
+                                   body_id * 4 + i;
 
-                            auto local_fem_point_id = j_fem - fem_point_offset;
-
-                            auto body_id = point_to_body(i_abd);  // global body id
-
-                            auto local_abd_body_id = body_id;  // - abd_body_offset;
-                            auto local_abd_point_id = i_abd;  // - abd_point_offset;
-                            //tex: $\mathbf{J}_{3\times 12}$
-                            gipc::ABDJacobi J = Js(local_abd_point_id);
-                            gipc::Matrix12x3 H = J.to_mat().transpose() * abd_fem_H3x3;
-                            //tex:
-                            //$$
-                            // \mathbf{H} = \begin{bmatrix}
-                            //  \mathbf{H}_{1} \\ \mathbf{H}_{2} \\ \mathbf{H}_{3} \\ \mathbf{H}_{4}
-                            //\end{bmatrix}
-                            //$$
-                            auto offset = 4 * I;
-                            if(btype(local_fem_point_id) != 0
-                               || is_fixed(body_id) == BodyBoundaryType::Fixed)
-                            {
-                                H.setZero();
-                            }
-                            for(int i = 0; i < 4; ++i)
-                            {
-                                triplet_out[h_abd_fem_contact_start_id + I * 4 + i] =
-                                    H.block<3, 3>(i * 3, 0);
-                                row_out[h_abd_fem_contact_start_id + I * 4 + i] =
-                                    body_id * 4 + i;
-
-                                col_out[h_abd_fem_contact_start_id + I * 4 + i] =
-                                    abd_body_count * 4 + local_fem_point_id;
-                            }
-                        }
-                    }
-                    // 2. process lower : FEM-ABD
-                    if(true)
-                    {
-                        //auto fem_abd_H3x3 = fem_abd_contact[I];
-                        auto i_fem = fem_abd_rows[I];  // global point id
-                        auto j_abd = fem_abd_cols[I];  // global point id
-
-
-                        auto local_fem_point_id = i_fem - fem_point_offset;
-
-                        auto body_id = point_to_body(j_abd);  // global body id
-
-                        for(int i = 0; i < 4; ++i)
-                        {
-                            triplet_out[h_fem_abd_contact_start_id + I * 4 + i].setZero();
-
-                            row_out[h_fem_abd_contact_start_id + I * 4 + i] =
-                                body_id * 4 + i;
-
-
-                            col_out[h_fem_abd_contact_start_id + I * 4 + i] =
-
-                                abd_body_count * 4 + local_fem_point_id;
-                        }
-                    }
-                });
-        
-                 
-
+                               col_out[h_abd_fem_contact_start_id + I * 4 + i] =
+                                   abd_body_count * 4 + local_fem_point_id;
+                           }
+                       }
+                   });
     }
-    global_triplets.h_abd_fem_contact_start_id = h_abd_fem_contact_start_id;
-    global_triplets.h_fem_abd_contact_start_id = h_fem_abd_contact_start_id;
+
     global_triplets.h_abd_abd_contact_start_id = h_abd_abd_contact_start_id;
-
-    global_triplets.abd_fem_contact_num = global_triplets.abd_fem_contact_num * 4;
-    global_triplets.fem_abd_contact_num = global_triplets.fem_abd_contact_num * 4;
-
     global_triplets.abd_abd_contact_num =
         16 * global_triplets.abd_abd_contact_num + abd_body_count * 10;
 
