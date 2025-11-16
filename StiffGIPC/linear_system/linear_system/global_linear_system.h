@@ -77,14 +77,7 @@ class GlobalLinearSystem
     muda::LinearSystemContext           m_context;
     muda::DeviceDenseVector<Float>      m_x;
     muda::DeviceDenseVector<Float>      m_b;
-    muda::DeviceTripletMatrix<Float, 3> m_triplet_A;
-    muda::DeviceBCOOMatrix<Float, 3>    m_bcoo_A;
-    muda::DeviceBCOOMatrix<Float, 3>    fake_bcoo_A;
-    
-    muda::DeviceBSRMatrix<Float, 3> m_bsr_A;
 
-    std::vector<SizeT> m_triplet_offset_per_subsystem;
-    std::vector<SizeT> m_triplet_count_per_subsystem;
     std::vector<SizeT> m_rhs_count_per_subsystem;
     std::vector<SizeT> m_rhs_offset_per_subsystem;
     std::vector<Float> m_accuracy_statisfied_per_subsystem;
@@ -99,8 +92,7 @@ class GlobalLinearSystem
     void distribute_solution();
     void apply_preconditioner(muda::DenseVectorView<Float>  z,
                               muda::CDenseVectorView<Float> r);
-    bool accuracy_statisfied(muda::DenseVectorView<Float> r);
-    void convert();
+
     void convert_new();
 
     void spmv(Float a, muda::CDenseVectorView<Float> x, Float b, muda::DenseVectorView<Float> y);

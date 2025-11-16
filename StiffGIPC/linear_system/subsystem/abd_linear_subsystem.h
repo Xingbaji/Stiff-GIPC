@@ -18,7 +18,6 @@ class ABDLinearSubsystem : public gipc::DiagonalSubsystem
     virtual void report_subsystem_info() override;
     virtual void assemble(DenseVectorView gradient) override;
     virtual void retrieve_solution(CDenseVectorView dx) override;
-    virtual bool accuracy_statisfied(CDenseVectorView residual) override;
     void         set_local_tolerance(gipc::Float tol) { m_local_tol = tol; }
 
   private:

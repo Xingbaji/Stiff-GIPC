@@ -52,7 +52,6 @@ class IterativeSolver
     void apply_preconditioner(muda::DenseVectorView<Float>  z,
                               muda::CDenseVectorView<Float> r) const;
 
-    bool accuracy_statisfied(muda::DenseVectorView<Float> r) const;
     muda::LinearSystemContext& ctx() const;
 
   private:

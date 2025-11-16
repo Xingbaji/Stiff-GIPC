@@ -152,8 +152,6 @@ Json GlobalLinearSystem::as_json() const
 void GlobalLinearSystem::apply_preconditioner(muda::DenseVectorView<Float>  z,
                                               muda::CDenseVectorView<Float> r)
 {
-    auto triplet_view = m_triplet_A.view();
-
     // first apply global preconditioner
     if(m_global_preconditioner)
         m_global_preconditioner->do_apply(r, z);
@@ -166,20 +164,7 @@ void GlobalLinearSystem::apply_preconditioner(muda::DenseVectorView<Float>  z,
         p->do_apply(r, z);
 }
 
-bool GlobalLinearSystem::accuracy_statisfied(muda::DenseVectorView<Float> r)
-{
-    // check if all subsystems' accuracy is satisfied
-    return std::all_of(m_inner_subsystems.begin(),
-                       m_inner_subsystems.end(),
-                       [&](DiagonalSubsystem* s)
-                       {
-                           if(s->right_hand_side_dof() == 0)
-                               return true;
-                           else
-                               return s->accuracy_statisfied(r.subview(
-                                   s->dof_offset()(0), s->right_hand_side_dof()));
-                       });
-}
+
 
 void GlobalLinearSystem::convert_new()
 {

@@ -14,7 +14,6 @@ class DiagonalSubsystem;
 class ILinearSubsystem
 {
   public:
-    using TripletMatrixView = muda::TripletMatrixView<Float, 3>;
     using DenseVectorView   = muda::DenseVectorView<Float>;
     using CDenseVectorView  = muda::CDenseVectorView<Float>;
 
@@ -142,20 +141,6 @@ class DiagonalSubsystem : public ILinearSubsystem
      */
     virtual void retrieve_solution(CDenseVectorView dx) = 0;
 
-    /**
-     * \brief Subclass should implement this function to check if the accuracy of the solution is satisfied.
-     * If using direct solver, this function won't be called. If using iterative solver, this function will
-     * be called to check if the accuracy of the solution is satisfied. If all subsystems return true, the
-     * iterative solver will stop.
-     * 
-     * \param[in] residual The residual of the linear subsystem, in the format of dense vector.
-     * it's subsytem's responsibility to decide if the residual is satisfied. You can use a local error
-     * or a global error to decide if the residual is satisfied.
-     * 
-     * \return true if the accuracy of the solution is satisfied, false otherwise.
-     */
-    virtual bool accuracy_statisfied(CDenseVectorView residual) = 0;
-
   private:
     virtual Vector2i dof_offset() const final override;
     void             dof_offset(IndexT dof_offset);
@@ -163,14 +148,4 @@ class DiagonalSubsystem : public ILinearSubsystem
     void do_retrieve_solution(CDenseVectorView dx);
 };
 
-/**
- * \brief The base class for coupling linear subsystem, 
- * representing only a subrange of triplet hessian matrix in the global linear system.
- * 
- * \details The coupling linear subsystem is a special case of linear subsystem, 
- * which don't need to assemble the gradient, and don't need to take the solution.
- * It just provides the inter-system coupling hessian matrix (off-diagonal block).
- * 
- * \sa \ref LinearSubsystem
- */
 }  // namespace gipc
