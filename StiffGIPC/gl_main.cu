@@ -1476,8 +1476,60 @@ void SpecialKey(GLint key, GLint x, GLint y)
 }
 
 
+// Headless mode initialization (no OpenGL)
+void init_headless(void)
+{
+    Init_CUDA();
+    LoadSettings();
+    ipc.build_gipc_system(d_tetMesh);
+    initScene();  // This initializes the scene and allocates device memory
+}
+
+// Headless simulation loop
+void run_headless(int num_frames)
+{
+    std::cout << "Running headless simulation for " << num_frames << " frames..." << std::endl;
+    
+    std::filesystem::exists(std::string{gipc::output_dir()})
+        || std::filesystem::create_directory(std::string{gipc::output_dir()});
+    
+    for (int frame = 0; frame < num_frames; frame++)
+    {
+        std::cout << "\n========== Frame " << frame << " ==========" << std::endl;
+        ipc.IPC_Solver(d_tetMesh);
+    }
+    
+    std::cout << "\nHeadless simulation complete." << std::endl;
+}
+
 int main(int argc, char** argv)
 {
+    // Check for headless mode
+    bool headless_mode = false;
+    int num_frames = 5;  // Default number of frames for headless mode
+    
+    for (int i = 1; i < argc; i++)
+    {
+        if (std::string(argv[i]) == "--headless")
+        {
+            headless_mode = true;
+        }
+        else if (std::string(argv[i]) == "--frames" && i + 1 < argc)
+        {
+            num_frames = std::atoi(argv[i + 1]);
+            i++;
+        }
+    }
+    
+    if (headless_mode)
+    {
+        std::cout << "Running in headless mode..." << std::endl;
+        init_headless();
+        run_headless(num_frames);
+        return 0;
+    }
+    
+    // Normal OpenGL mode
     glutInit(&argc, argv);
     //glutInitDisplayMode(GLUT_DEPTH | GLUT_DOUBLE | GLUT_RGBA);
 
