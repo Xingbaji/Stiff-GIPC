@@ -118,31 +118,69 @@ class lbvh_e : public lbvh
     void SelfCollitionFullDetect(double dHat, const double3* moveDir, const double& alpha);
 };
 
-__device__ void _d_PP(const double3& v0, const double3& v1, double& d);
+// ============================================================================
+// Inline device functions for distance calculations
+// These MUST be inlined for performance in CUDA separable compilation mode
+// ============================================================================
 
-__device__ void _d_PT(const double3& v0,
-                      const double3& v1,
-                      const double3& v2,
-                      const double3& v3,
-                      double&        d);
+#include "gpu_eigen_libs.cuh"
 
-__device__ void _d_PE(const double3& v0, const double3& v1, const double3& v2, double& d);
+__device__ __forceinline__ void _d_PP(const double3& v0, const double3& v1, double& d)
+{
+    d = __GEIGEN__::__squaredNorm(__GEIGEN__::__minus(v0, v1));
+}
 
-__device__ void _d_EE(const double3& v0,
-                      const double3& v1,
-                      const double3& v2,
-                      const double3& v3,
-                      double&        d);
+__device__ __forceinline__ void _d_PT(const double3& v0,
+                                      const double3& v1,
+                                      const double3& v2,
+                                      const double3& v3,
+                                      double&        d)
+{
+    double3 b    = __GEIGEN__::__v_vec_cross(__GEIGEN__::__minus(v2, v1),
+                                          __GEIGEN__::__minus(v3, v1));
+    double aTb = __GEIGEN__::__v_vec_dot(__GEIGEN__::__minus(v0, v1), b);
+    d = aTb * aTb / __GEIGEN__::__squaredNorm(b);
+}
 
-__device__ void _d_EEParallel(const double3& v0,
-                              const double3& v1,
-                              const double3& v2,
-                              const double3& v3,
-                              double&        d);
+__device__ __forceinline__ void _d_PE(const double3& v0, const double3& v1, const double3& v2, double& d)
+{
+    d = __GEIGEN__::__squaredNorm(__GEIGEN__::__v_vec_cross(
+            __GEIGEN__::__minus(v1, v0), __GEIGEN__::__minus(v2, v0)))
+        / __GEIGEN__::__squaredNorm(__GEIGEN__::__minus(v2, v1));
+}
 
-__device__ double _compute_epx(const double3& v0,
-                               const double3& v1,
-                               const double3& v2,
-                               const double3& v3);
+__device__ __forceinline__ void _d_EE(const double3& v0,
+                                      const double3& v1,
+                                      const double3& v2,
+                                      const double3& v3,
+                                      double&        d)
+{
+    double3 b = __GEIGEN__::__v_vec_cross(__GEIGEN__::__minus(v1, v0),
+                                          __GEIGEN__::__minus(v3, v2));
+    double aTb = __GEIGEN__::__v_vec_dot(__GEIGEN__::__minus(v2, v0), b);
+    d = aTb * aTb / __GEIGEN__::__squaredNorm(b);
+}
+
+__device__ __forceinline__ void _d_EEParallel(const double3& v0,
+                                              const double3& v1,
+                                              const double3& v2,
+                                              const double3& v3,
+                                              double&        d)
+{
+    double3 b = __GEIGEN__::__v_vec_cross(
+        __GEIGEN__::__v_vec_cross(__GEIGEN__::__minus(v1, v0), __GEIGEN__::__minus(v2, v0)),
+        __GEIGEN__::__minus(v1, v0));
+    double aTb = __GEIGEN__::__v_vec_dot(__GEIGEN__::__minus(v2, v0), b);
+    d = aTb * aTb / __GEIGEN__::__squaredNorm(b);
+}
+
+__device__ __forceinline__ double _compute_epx(const double3& v0,
+                                               const double3& v1,
+                                               const double3& v2,
+                                               const double3& v3)
+{
+    return 1e-3 * __GEIGEN__::__squaredNorm(__GEIGEN__::__minus(v0, v1))
+           * __GEIGEN__::__squaredNorm(__GEIGEN__::__minus(v2, v3));
+}
 
 #endif

@@ -226,55 +226,9 @@ __device__ inline unsigned int find_split(const uint64_t*    node_code,
     return split;
 }
 
-__device__ void _d_PP(const double3& v0, const double3& v1, double& d)
-{
-    d = __GEIGEN__::__squaredNorm(__GEIGEN__::__minus(v0, v1));
-}
-
-__device__ void _d_PT(const double3& v0, const double3& v1, const double3& v2, const double3& v3, double& d)
-{
-    double3 b    = __GEIGEN__::__v_vec_cross(__GEIGEN__::__minus(v2, v1),
-                                          __GEIGEN__::__minus(v3, v1));
-    double3 test = __GEIGEN__::__minus(v0, v1);
-    double aTb = __GEIGEN__::__v_vec_dot(__GEIGEN__::__minus(v0, v1), b);  //(v0 - v1).dot(b);
-    //printf("%f   %f   %f          %f   %f   %f   %f\n", b.x, b.y, b.z, test.x, test.y, test.z, aTb);
-    d = aTb * aTb / __GEIGEN__::__squaredNorm(b);
-}
-
-__device__ void _d_PE(const double3& v0, const double3& v1, const double3& v2, double& d)
-{
-    d = __GEIGEN__::__squaredNorm(__GEIGEN__::__v_vec_cross(
-            __GEIGEN__::__minus(v1, v0), __GEIGEN__::__minus(v2, v0)))
-        / __GEIGEN__::__squaredNorm(__GEIGEN__::__minus(v2, v1));
-}
-
-__device__ void _d_EE(const double3& v0, const double3& v1, const double3& v2, const double3& v3, double& d)
-{
-    double3 b = __GEIGEN__::__v_vec_cross(__GEIGEN__::__minus(v1, v0),
-                                          __GEIGEN__::__minus(v3, v2));  //(v1 - v0).cross(v3 - v2);
-    double aTb = __GEIGEN__::__v_vec_dot(__GEIGEN__::__minus(v2, v0), b);  //(v2 - v0).dot(b);
-    d = aTb * aTb / __GEIGEN__::__squaredNorm(b);
-}
-
-
-__device__ void _d_EEParallel(const double3& v0,
-                              const double3& v1,
-                              const double3& v2,
-                              const double3& v3,
-                              double&        d)
-{
-    double3 b = __GEIGEN__::__v_vec_cross(
-        __GEIGEN__::__v_vec_cross(__GEIGEN__::__minus(v1, v0), __GEIGEN__::__minus(v2, v0)),
-        __GEIGEN__::__minus(v1, v0));
-    double aTb = __GEIGEN__::__v_vec_dot(__GEIGEN__::__minus(v2, v0), b);  //(v2 - v0).dot(b);
-    d = aTb * aTb / __GEIGEN__::__squaredNorm(b);
-}
-
-__device__ double _compute_epx(const double3& v0, const double3& v1, const double3& v2, const double3& v3)
-{
-    return 1e-3 * __GEIGEN__::__squaredNorm(__GEIGEN__::__minus(v0, v1))
-           * __GEIGEN__::__squaredNorm(__GEIGEN__::__minus(v2, v3));
-}
+// _d_PP, _d_PT, _d_PE, _d_EE, _d_EEParallel, _compute_epx
+// are now defined inline in mlbvh.cuh for better performance
+// in CUDA separable compilation mode
 
 __device__ double _compute_epx_cp(const double3& v0,
                                   const double3& v1,
