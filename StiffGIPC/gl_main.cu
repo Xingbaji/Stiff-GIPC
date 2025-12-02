@@ -915,6 +915,14 @@ void initScene()
     ipc.pcg_data.P_type = 1;
 
     int scene_no = 2;
+
+    if (std::getenv("GIPC_SCENE")) {
+        scene_no = std::stoi(std::getenv("GIPC_SCENE"));
+        printf("Loading scene from environment variable GIPC_SCENE: %d\n", scene_no);
+    } else {
+        printf("Using default scene: %d\n", scene_no);
+    }
+
     //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     //!!!!!!!!!!!!!!!!ABD must be loaded before FEM!!!!!!!!!!!!!!!!!!
     //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
