@@ -7,6 +7,7 @@
 //
 
 #include "ipc_barrier.cuh"
+#include "GIPC.cuh"
 #include "mlbvh.cuh"  // Contains _d_EE, _d_PP, _d_PE, _d_PT, _compute_epx functions
 #include <cuda_runtime.h>
 #include <cmath>
@@ -464,4 +465,161 @@ __global__ void _computeSelfCloseVal(const double3*  vertexes,
         _closeConstraintID[tidx]  = gidx;
         _closeConstraintVal[tidx] = dist2;
     }
+}
+
+//=============================================================================
+// GIPC Member Function Implementations
+//=============================================================================
+
+void GIPC::calBarrierGradientAndHessian(double3* _gradient, double mKappa)
+{
+    int numbers = h_cpNum[0];
+    if(numbers < 1)
+        return;
+    const unsigned int threadNum = 256;
+    int                blockNum  = (numbers + threadNum - 1) / threadNum;
+
+    _calBarrierGradientAndHessian<<<blockNum, threadNum>>>(
+        _vertexes,
+        _rest_vertexes,
+        _collisonPairs,
+        _gradient,
+        gipc_global_triplet.block_values(),
+        gipc_global_triplet.block_row_indices(),
+        gipc_global_triplet.block_col_indices(),
+        _cpNum,
+        _MatIndex,
+        dHat,
+        mKappa,
+        h_cpNum[4],
+        h_cpNum[3],
+        h_cpNum[2],
+        numbers);
+}
+
+void GIPC::calBarrierHessian()
+{
+    int numbers = h_cpNum[0];
+    if(numbers < 1)
+        return;
+    const unsigned int threadNum = 32;
+    int                blockNum  = (numbers + threadNum - 1) / threadNum;
+
+    _calBarrierHessian<<<blockNum, threadNum>>>(_vertexes,
+                                                _rest_vertexes,
+                                                _collisonPairs,
+                                                gipc_global_triplet.block_values(),
+                                                gipc_global_triplet.block_row_indices(),
+                                                gipc_global_triplet.block_col_indices(),
+                                                _cpNum,
+                                                _MatIndex,
+                                                dHat,
+                                                Kappa,
+                                                h_cpNum[4],
+                                                h_cpNum[3],
+                                                h_cpNum[2],
+                                                numbers);
+}
+
+void GIPC::calFrictionHessian(device_TetraData& TetMesh)
+{
+    int numbers = h_cpNum_last[0];
+    const unsigned int threadNum = 256;
+    int                blockNum  = (numbers + threadNum - 1) / threadNum;
+    if(numbers > 0)
+    {
+        _calFrictionHessian<<<blockNum, threadNum>>>(
+            _vertexes,
+            TetMesh.o_vertexes,
+            _collisonPairs_lastH,
+            gipc_global_triplet.block_values(),
+            gipc_global_triplet.block_row_indices(),
+            gipc_global_triplet.block_col_indices(),
+            _cpNum,
+            numbers,
+            IPC_dt,
+            distCoord,
+            tanBasis,
+            fDhat * IPC_dt * IPC_dt,
+            lambda_lastH_scalar,
+            frictionRate,
+            h_cpNum[4],
+            h_cpNum[3],
+            h_cpNum[2],
+            h_cpNum_last[4],
+            h_cpNum_last[3],
+            h_cpNum_last[2]);
+    }
+
+    numbers = h_gpNum_last;
+    CUDA_SAFE_CALL(cudaMemcpy(_gpNum, &h_gpNum_last, sizeof(uint32_t), cudaMemcpyHostToDevice));
+    if(numbers < 1)
+        return;
+
+    blockNum = (numbers + threadNum - 1) / threadNum;
+    int global_offset = gipc_global_triplet.global_triplet_offset + h_cpNum_last[4] * M12_Off
+                        + h_cpNum_last[3] * M9_Off + h_cpNum_last[2] * M6_Off;
+    _calFrictionHessian_gd<<<blockNum, threadNum>>>(
+        _vertexes,
+        TetMesh.o_vertexes,
+        _groundNormal,
+        _collisonPairs_lastH_gd,
+        gipc_global_triplet.block_values(),
+        gipc_global_triplet.block_row_indices(),
+        gipc_global_triplet.block_col_indices(),
+        numbers,
+        IPC_dt,
+        fDhat * IPC_dt * IPC_dt,
+        lambda_lastH_scalar_gd,
+        global_offset,
+        gd_frictionRate);
+}
+
+void GIPC::calBarrierGradient(double3* _gradient, double mKappa)
+{
+    int numbers = h_cpNum[0];
+    if(numbers < 1)
+        return;
+    const unsigned int threadNum = 256;
+    int                blockNum  = (numbers + threadNum - 1) / threadNum;
+
+    _calBarrierGradient<<<blockNum, threadNum>>>(
+        _vertexes, _rest_vertexes, _collisonPairs, _gradient, dHat, mKappa, numbers);
+}
+
+void GIPC::calFrictionGradient(double3* _gradient, device_TetraData& TetMesh)
+{
+    int                numbers   = h_cpNum_last[0];
+    const unsigned int threadNum = 256;
+    int                blockNum  = 0;
+    if(numbers > 0)
+    {
+        blockNum = (numbers + threadNum - 1) / threadNum;
+        _calFrictionGradient<<<blockNum, threadNum>>>(_vertexes,
+                                                      TetMesh.o_vertexes,
+                                                      _collisonPairs_lastH,
+                                                      _gradient,
+                                                      numbers,
+                                                      IPC_dt,
+                                                      distCoord,
+                                                      tanBasis,
+                                                      fDhat * IPC_dt * IPC_dt,
+                                                      lambda_lastH_scalar,
+                                                      frictionRate);
+    }
+    numbers = h_gpNum_last;
+    if(numbers < 1)
+        return;
+    blockNum = (numbers + threadNum - 1) / threadNum;
+
+    _calFrictionGradient_gd<<<blockNum, threadNum>>>(_vertexes,
+                                                     TetMesh.o_vertexes,
+                                                     _groundNormal,
+                                                     _collisonPairs_lastH_gd,
+                                                     _gradient,
+                                                     numbers,
+                                                     IPC_dt,
+                                                     fDhat * IPC_dt * IPC_dt,
+                                                     lambda_lastH_scalar_gd,
+                                                     gd_frictionRate);
 }
