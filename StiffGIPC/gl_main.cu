@@ -914,7 +914,7 @@ void initScene()
     std::filesystem::exists(metis_dir) || std::filesystem::create_directory(metis_dir);
     ipc.pcg_data.P_type = 1;
 
-    int scene_no = 2;
+    int scene_no = ipc.scene_id;
     //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     //!!!!!!!!!!!!!!!!ABD must be loaded before FEM!!!!!!!!!!!!!!!!!!
     //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -1489,6 +1489,24 @@ void run_headless(int num_frames)
     {
         std::cout << "\n========== Frame " << frame << " ==========" << std::endl;
         ipc.IPC_Solver(d_tetMesh);
+
+        if(ipc.animation)
+        {
+            std::string filename =
+                "triMesh/body4/postcvpr_big_body_" + std::to_string(frameId + 1) + ".obj";
+            frameId++;
+            tetMesh.load_animation(filename, 1, make_double3(-1, -0.5, -0.5));
+            CUDA_SAFE_CALL(cudaMemcpy(d_tetMesh.targetVert,
+                                      tetMesh.targetPos.data(),
+                                      tetMesh.softNum * sizeof(double3),
+                                      cudaMemcpyHostToDevice));
+        }
+        
+        // Sync back to host
+        CUDA_SAFE_CALL(cudaMemcpy(tetMesh.vertexes.data(),
+                              ipc._vertexes,
+                              ipc.vertexNum * sizeof(double3),
+                              cudaMemcpyDeviceToHost));
     }
     
     std::cout << "\nHeadless simulation complete." << std::endl;
@@ -1511,11 +1529,16 @@ int main(int argc, char** argv)
             num_frames = std::atoi(argv[i + 1]);
             i++;
         }
+        else if (std::string(argv[i]) == "--demo" && i + 1 < argc)
+        {
+            ipc.scene_id = std::atoi(argv[i + 1]);
+            i++;
+        }
     }
     
     if (headless_mode)
     {
-        std::cout << "Running in headless mode (ORIGINAL CODE - no refactoring)..." << std::endl;
+        std::cout << "Running in headless mode..." << std::endl;
         init_headless();
         run_headless(num_frames);
         return 0;

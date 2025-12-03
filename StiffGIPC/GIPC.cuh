@@ -106,6 +106,7 @@ class GIPC
     AABB     SceneSize;
     int      MAX_COLLITION_PAIRS_NUM     = 0;
     int      MAX_CCD_COLLITION_PAIRS_NUM = 0;
+    int      scene_id                    = 2;
 
     double RestNHEnergy       = 0.0;
     double animation_subRate  = 0.0;

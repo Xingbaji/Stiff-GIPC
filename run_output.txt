@@ -1,0 +1,183 @@
+Building...
+Configuring CMake...
+-- Checking for module 'glut'
+--   No package 'glut' found
+-- CUDA library includes: /usr/local/cuda-12.4/targets/x86_64-linux/include
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /root/Stiff-GIPC/build
+Building...
+Consolidate compiler generated dependencies of target GKlib
+[ 24%] Built target GKlib
+Consolidate compiler generated dependencies of target metis
+[ 58%] Built target metis
+Consolidate compiler generated dependencies of target metis_partition
+[ 64%] Built target metis_partition
+Consolidate compiler generated dependencies of target gipc
+[100%] Built target gipc
+Build successful.
+Running simulation...
+Using Demo: 1, Frames: 10
+Running in headless mode...
+ipc.shearStiff: 10067.114094
+* Building GIPC system:
+- create ABD system...
+- create Global Linear System ...
+* Finished building GIPC system.
+metis files exist
+metis files exist
+edges_adj_points.size
+12160
+maxy:   1.049085
+meanMass: 0.002284
+stretchStiff:  3355.704698,  shearStiff:   10067.114094
+ABD FEM count info: 
+abd_body_offset: 0
+abd_body_num:    1
+fem_body_offset: 1
+fem_body_num:    2
+abd_tet_offset:  0
+abd_tet_num:     79935
+fem_tet_offset:  79935
+fem_tet_num:     79935
+fem_tri_offset:  0
+fem_tri_num:     8192
+abd_point_offset:0
+abd_point_num:   19193
+fem_point_offset:19193
+fem_point_num:   23418
+
+vertNum: 42611      tetraNum: 159870      faceNum: 49856
+surfVertNum: 25061      surfEdgesNum: 74912
+maxCollisionPairsNum_CCD: 8981760      maxCollisionPairsNum: 2025063
+level num:  5
+bboxDiagSize2: 11.122766
+maxConer: 0.243930  -0.100916   0.235084           minCorner: -0.378428  -0.718050   -0.247384
+restSNKE: 0.000000
+    - create ABD Linear Subsystem ...
+    - create FEM Linear Subsystem ...
+- create PCG Solver
+- create Preconditioner
+Running headless simulation for 10 frames...
+
+========== Frame 0 ==========
+solve_subIP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+      Kappa: 513.295273                               iteration k:  2
+average time cost:     28.007360,    frame id:   1
+
+=====================================================================================
+                         TIMING BREAKDOWN: MERGED TIMERS
+=====================================================================================
+*GlobalTimer  |       Time Cost |  Total Count
+
+========== Frame 1 ==========
+solve_subIP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+      Kappa: 513.295273                               iteration k:  2
+average time cost:     22.207040,    frame id:   2
+
+=====================================================================================
+                         TIMING BREAKDOWN: MERGED TIMERS
+=====================================================================================
+*GlobalTimer  |       Time Cost |  Total Count
+
+========== Frame 2 ==========
+solve_subIP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+      Kappa: 513.295273                               iteration k:  2
+average time cost:     19.963925,    frame id:   3
+
+=====================================================================================
+                         TIMING BREAKDOWN: MERGED TIMERS
+=====================================================================================
+*GlobalTimer  |       Time Cost |  Total Count
+
+========== Frame 3 ==========
+solve_subIP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+      Kappa: 513.295273                               iteration k:  2
+average time cost:     18.829700,    frame id:   4
+
+=====================================================================================
+                         TIMING BREAKDOWN: MERGED TIMERS
+=====================================================================================
+*GlobalTimer  |       Time Cost |  Total Count
+
+========== Frame 4 ==========
+solve_subIP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+      Kappa: 513.295273                               iteration k:  3
+average time cost:     17.843785,    frame id:   5
+
+=====================================================================================
+                         TIMING BREAKDOWN: MERGED TIMERS
+=====================================================================================
+*GlobalTimer  |       Time Cost |  Total Count
+
+========== Frame 5 ==========
+solve_subIP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+      Kappa: 513.295273                               iteration k:  3
+average time cost:     17.331717,    frame id:   6
+
+=====================================================================================
+                         TIMING BREAKDOWN: MERGED TIMERS
+=====================================================================================
+*GlobalTimer  |       Time Cost |  Total Count
+
+========== Frame 6 ==========
+solve_subIP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+      Kappa: 513.295273                               iteration k:  3
+average time cost:     17.014029,    frame id:   7
+
+=====================================================================================
+                         TIMING BREAKDOWN: MERGED TIMERS
+=====================================================================================
+*GlobalTimer  |       Time Cost |  Total Count
+
+========== Frame 7 ==========
+solve_subIP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+      Kappa: 513.295273                               iteration k:  3
+average time cost:     16.841542,    frame id:   8
+
+=====================================================================================
+                         TIMING BREAKDOWN: MERGED TIMERS
+=====================================================================================
+*GlobalTimer  |       Time Cost |  Total Count
+
+========== Frame 8 ==========
+solve_subIP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+      Kappa: 513.295273                               iteration k:  3
+average time cost:     16.697273,    frame id:   9
+
+=====================================================================================
+                         TIMING BREAKDOWN: MERGED TIMERS
+=====================================================================================
+*GlobalTimer  |       Time Cost |  Total Count
+
+========== Frame 9 ==========
+solve_subIP >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+
+      Kappa: 513.295273                               iteration k:  3
+average time cost:     16.588709,    frame id:   10
+
+=====================================================================================
+                         TIMING BREAKDOWN: MERGED TIMERS
+=====================================================================================
+*GlobalTimer  |       Time Cost |  Total Count
+
+Headless simulation complete.
