@@ -13,7 +13,7 @@
 #include "math.h"
 #include "gpu_eigen_libs.cuh"
 
-void pFpx_peeV0(double d,
+inline void pFpx_peeV0(double d,
                 double x11,
                 double x12,
                 double x13,
@@ -236,7 +236,7 @@ void pFpx_peeV0(double d,
     result[11][8] = t65 * (t88 + t64 * t28 * 2.0) / 2.0;
 }
 
-void pFpx_ppeV0(double d,
+inline void pFpx_ppeV0(double d,
                 double x11,
                 double x12,
                 double x13,
@@ -441,7 +441,7 @@ void pFpx_ppeV0(double d,
     result[11][8] = 0.0;
 }
 
-void pFpx_pppV0(double d,
+inline void pFpx_pppV0(double d,
                 double x11,
                 double x12,
                 double x13,
@@ -628,7 +628,7 @@ void pFpx_pppV0(double d,
 }
 
 
-void pFpx_peeV1(double d,
+inline void pFpx_peeV1(double d,
                 double x11,
                 double x12,
                 double x13,
@@ -851,7 +851,7 @@ void pFpx_peeV1(double d,
     result[11][8] = t65 * (t88 + t64 * t28 * 2.0) / 2.0;
 }
 
-void pFpx_pppV1(double d,
+inline void pFpx_pppV1(double d,
                 double x11,
                 double x12,
                 double x13,
@@ -1037,7 +1037,7 @@ void pFpx_pppV1(double d,
     result[11][8] = 0.0;
 }
 
-void pFpx_ppeV1(double d,
+inline void pFpx_ppeV1(double d,
                 double x11,
                 double x12,
                 double x13,
@@ -1247,7 +1247,7 @@ void pFpx_ppeV1(double d,
     result[11][8] = 0.0;
 }
 
-__host__ __device__ void pFpx_pppV0V1(double d,
+__host__ __device__ inline void pFpx_pppV0V1(double d,
                                       double x11,
                                       double x12,
                                       double x13,
@@ -1418,7 +1418,7 @@ __host__ __device__ void pFpx_pppV0V1(double d,
     result[11][8] = 0.0;
 }
 
-__host__ __device__ void pFpx_ppeV0V1(double d,
+__host__ __device__ inline void pFpx_ppeV0V1(double d,
                                       double x11,
                                       double x12,
                                       double x13,
@@ -1613,7 +1613,7 @@ __host__ __device__ void pFpx_ppeV0V1(double d,
     result[11][8] = 0.0;
 }
 
-__host__ __device__ void pFpx_peeV0V1(double d,
+__host__ __device__ inline void pFpx_peeV0V1(double d,
                                       double x11,
                                       double x12,
                                       double x13,
@@ -1826,7 +1826,7 @@ __host__ __device__ void pFpx_peeV0V1(double d,
     result[11][8] = t69 * (t90 + t70 * t19 * 2.0) / 2.0;
 }
 
-__host__ __device__ void pFpx_ppe(const double3&           x0,
+__host__ __device__ inline void pFpx_ppe(const double3&           x0,
                                   const double3&           x1,
                                   const double3&           x2,
                                   const double3&           x3,
@@ -1837,7 +1837,7 @@ __host__ __device__ void pFpx_ppe(const double3&           x0,
         d_hatSqrt, x0.x, x0.y, x0.z, x1.x, x1.y, x1.z, x2.x, x2.y, x2.z, x3.x, x3.y, x3.z, pFpx.m);
 }
 
-__host__ __device__ void pFpx_ppp(const double3&           x0,
+__host__ __device__ inline void pFpx_ppp(const double3&           x0,
                                   const double3&           x1,
                                   const double3&           x2,
                                   const double3&           x3,
@@ -1848,7 +1848,7 @@ __host__ __device__ void pFpx_ppp(const double3&           x0,
         d_hatSqrt, x0.x, x0.y, x0.z, x1.x, x1.y, x1.z, x2.x, x2.y, x2.z, x3.x, x3.y, x3.z, pFpx.m);
 }
 
-__host__ __device__ void pFpx_pee(const double3&           x0,
+__host__ __device__ inline void pFpx_pee(const double3&           x0,
                                   const double3&           x1,
                                   const double3&           x2,
                                   const double3&           x3,
@@ -1858,7 +1858,7 @@ __host__ __device__ void pFpx_pee(const double3&           x0,
     pFpx_peeV0V1(
         d_hatSqrt, x0.x, x0.y, x0.z, x1.x, x1.y, x1.z, x2.x, x2.y, x2.z, x3.x, x3.y, x3.z, pFpx.m);
 }
-__host__ __device__ void pFpx_ee2(double d,
+__host__ __device__ inline void pFpx_ee2(double d,
                                   double x11,
                                   double x12,
                                   double x13,
@@ -2046,7 +2046,7 @@ __host__ __device__ void pFpx_ee2(double d,
     result[11][7] = 0;
     result[11][8] = t77 * (t83 + t78 * t19 * 2.0) / 2.0;
 }
-__host__ __device__ void pFpx_ee2(const double3&           x0,
+__host__ __device__ inline void pFpx_ee2(const double3&           x0,
                                   const double3&           x1,
                                   const double3&           x2,
                                   const double3&           x3,
@@ -2056,7 +2056,7 @@ __host__ __device__ void pFpx_ee2(const double3&           x0,
     pFpx_ee2(d_hatSqrt, x0.x, x0.y, x0.z, x1.x, x1.y, x1.z, x2.x, x2.y, x2.z, x3.x, x3.y, x3.z, pFpx.m);
 }
 
-__host__ __device__ void pFpx_pp2(
+__host__ __device__ inline void pFpx_pp2(
     double d, double x11, double x12, double x13, double x21, double x22, double x23, double result[6])
 {
     double t25;
@@ -2083,7 +2083,7 @@ __host__ __device__ void pFpx_pp2(
     result[4] = -t27;
     result[5] = -t25;
 }
-__host__ __device__ void pFpx_pp2(const double3&       x0,
+__host__ __device__ inline void pFpx_pp2(const double3&       x0,
                                   const double3&       x1,
                                   double               d_hatSqrt,
                                   __GEIGEN__::Vector6& pFpx)
@@ -2092,7 +2092,7 @@ __host__ __device__ void pFpx_pp2(const double3&       x0,
 }
 
 
-__host__ __device__ void pFpx_pt2(double d,
+__host__ __device__ inline void pFpx_pt2(double d,
                                   double x11,
                                   double x12,
                                   double x13,
@@ -2289,7 +2289,7 @@ __host__ __device__ void pFpx_pt2(double d,
         * -0.5;
 }
 
-__host__ __device__ void pFpx_pe2(double d,
+__host__ __device__ inline void pFpx_pe2(double d,
                                   double x11,
                                   double x12,
                                   double x13,
@@ -2385,7 +2385,7 @@ __host__ __device__ void pFpx_pe2(double d,
     result[8][3] = t51 * (t56 - t43 * (t18 * t46 * 2.0 + t19 * t47 * 2.0)) / 2.0;
 }
 
-__host__ __device__ void pFpx_pe2(const double3&          x0,
+__host__ __device__ inline void pFpx_pe2(const double3&          x0,
                                   const double3&          x1,
                                   const double3&          x2,
                                   double                  d_hatSqrt,
@@ -2394,7 +2394,7 @@ __host__ __device__ void pFpx_pe2(const double3&          x0,
     pFpx_pe2(d_hatSqrt, x0.x, x0.y, x0.z, x1.x, x1.y, x1.z, x2.x, x2.y, x2.z, pFpx.m);
 }
 
-__host__ __device__ void pFpx_pt2(const double3&           x0,
+__host__ __device__ inline void pFpx_pt2(const double3&           x0,
                                   const double3&           x1,
                                   const double3&           x2,
                                   const double3&           x3,
@@ -2404,7 +2404,7 @@ __host__ __device__ void pFpx_pt2(const double3&           x0,
     pFpx_pt2(d_hatSqrt, x0.x, x0.y, x0.z, x1.x, x1.y, x1.z, x2.x, x2.y, x2.z, x3.x, x3.y, x3.z, pFpx.m);
 }
 
-__host__ __device__ void pDmpx_ee_flip(double d,
+__host__ __device__ inline void pDmpx_ee_flip(double d,
                                        double x11,
                                        double x12,
                                        double x13,
@@ -2712,7 +2712,7 @@ __host__ __device__ void pDmpx_ee_flip(double d,
     result[11][8] = t15 + 1.0;
 }
 
-__host__ __device__ void pDmpx_ee_flip(const double3&           x0,
+__host__ __device__ inline void pDmpx_ee_flip(const double3&           x0,
                                        const double3&           x1,
                                        const double3&           x2,
                                        const double3&           x3,
@@ -2736,7 +2736,7 @@ __host__ __device__ void pDmpx_ee_flip(const double3&           x0,
 }
 
 
-__host__ __device__ void pDmpx_ee(double d,
+__host__ __device__ inline void pDmpx_ee(double d,
                                   double x11,
                                   double x12,
                                   double x13,
@@ -3041,7 +3041,7 @@ __host__ __device__ void pDmpx_ee(double d,
     result[11][8] = t15 + 1.0;
 }
 
-__host__ __device__ void pDmpx_ee(const double3&           x0,
+__host__ __device__ inline void pDmpx_ee(const double3&           x0,
                                   const double3&           x1,
                                   const double3&           x2,
                                   const double3&           x3,
@@ -3064,7 +3064,7 @@ __host__ __device__ void pDmpx_ee(const double3&           x0,
              pDmpx.m);
 }
 
-__host__ __device__ void pDmpx_pee_reflect(double d,
+__host__ __device__ inline void pDmpx_pee_reflect(double d,
                                            double x11,
                                            double x12,
                                            double x13,
@@ -3468,7 +3468,7 @@ __host__ __device__ void pDmpx_pee_reflect(double d,
     result[11][3] = t36;
 }
 
-__host__ __device__ void pDmpx_pee_reflect(const double3&           x0,
+__host__ __device__ inline void pDmpx_pee_reflect(const double3&           x0,
                                            const double3&           x1,
                                            const double3&           x2,
                                            const double3&           x3,
@@ -3492,7 +3492,7 @@ __host__ __device__ void pDmpx_pee_reflect(const double3&           x0,
 }
 
 
-__host__ __device__ void ft_2(const double ct[270], double result[12][4])
+__host__ __device__ inline void ft_2(const double ct[270], double result[12][4])
 {
     double ct_idx_0;
     double ct_idx_1;
@@ -4468,7 +4468,7 @@ __host__ __device__ void ft_2(const double ct[270], double result[12][4])
         + t836_tmp * ct[85] * ct[239] * ct[7];
 }
 
-__host__ __device__ void pDmpx_pee(double d,
+__host__ __device__ inline void pDmpx_pee(double d,
                                    double x11,
                                    double x12,
                                    double x13,
@@ -5123,7 +5123,7 @@ __host__ __device__ void pDmpx_pee(double d,
     ft_2(b_d, result);
 }
 
-__host__ __device__ void pDmpx_pee(const double3&           x0,
+__host__ __device__ inline void pDmpx_pee(const double3&           x0,
                                    const double3&           x1,
                                    const double3&           x2,
                                    const double3&           x3,
@@ -5145,7 +5145,7 @@ __host__ __device__ void pDmpx_pee(const double3&           x0,
               x3.z,
               pDmpx.m);
 }
-__host__ __device__ void pDmpx_pt(double d,
+__host__ __device__ inline void pDmpx_pt(double d,
                                   double x11,
                                   double x12,
                                   double x13,
@@ -5479,7 +5479,7 @@ __host__ __device__ void pDmpx_pt(double d,
     result[11][8] = t274 + 1.0;
 }
 
-__host__ __device__ void pDmpx_pt(const double3&           x0,
+__host__ __device__ inline void pDmpx_pt(const double3&           x0,
                                   const double3&           x1,
                                   const double3&           x2,
                                   const double3&           x3,
@@ -5503,7 +5503,7 @@ __host__ __device__ void pDmpx_pt(const double3&           x0,
 }
 
 
-__host__ __device__ void pDmpx_pt_flip(double d,
+__host__ __device__ inline void pDmpx_pt_flip(double d,
                                        double x11,
                                        double x12,
                                        double x13,
@@ -5838,7 +5838,7 @@ __host__ __device__ void pDmpx_pt_flip(double d,
     result[11][8] = t272 + 1.0;
 }
 
-__host__ __device__ void pDmpx_pt_flip(const double3&           x0,
+__host__ __device__ inline void pDmpx_pt_flip(const double3&           x0,
                                        const double3&           x1,
                                        const double3&           x2,
                                        const double3&           x3,
@@ -5860,7 +5860,7 @@ __host__ __device__ void pDmpx_pt_flip(const double3&           x0,
                   x3.z,
                   pDmpx.m);
 }
-__host__ __device__ void pDmpx_pe_reflect(double d,
+__host__ __device__ inline void pDmpx_pe_reflect(double d,
                                           double x11,
                                           double x12,
                                           double x13,
@@ -6214,7 +6214,7 @@ __host__ __device__ void pDmpx_pe_reflect(double d,
     result[8][3] = t36 - 1.0;
 }
 
-__host__ __device__ void pDmpx_pe_reflect(const double3&          x0,
+__host__ __device__ inline void pDmpx_pe_reflect(const double3&          x0,
                                           const double3&          x1,
                                           const double3&          x2,
                                           double                  d_hatSqrt,
@@ -6223,7 +6223,7 @@ __host__ __device__ void pDmpx_pe_reflect(const double3&          x0,
     pDmpx_pe_reflect(
         d_hatSqrt, x0.x, x0.y, x0.z, x1.x, x1.y, x1.z, x2.x, x2.y, x2.z, pDmpx.m);
 }
-__host__ __device__ void pDmpx_pe(double d,
+__host__ __device__ inline void pDmpx_pe(double d,
                                   double x11,
                                   double x12,
                                   double x13,
@@ -6577,7 +6577,7 @@ __host__ __device__ void pDmpx_pe(double d,
     result[8][3] = t36 + 1.0;
 }
 
-__host__ __device__ void pDmpx_pe(const double3&          x0,
+__host__ __device__ inline void pDmpx_pe(const double3&          x0,
                                   const double3&          x1,
                                   const double3&          x2,
                                   double                  d_hatSqrt,
@@ -6586,7 +6586,7 @@ __host__ __device__ void pDmpx_pe(const double3&          x0,
     pDmpx_pe(
         d_hatSqrt, x0.x, x0.y, x0.z, x1.x, x1.y, x1.z, x2.x, x2.y, x2.z, pDmpx.m);
 }
-__host__ __device__ void pDmpx_pp_reflect(
+__host__ __device__ inline void pDmpx_pp_reflect(
     double d, double x11, double x12, double x13, double x21, double x22, double x23, double result[6])
 {
     double t10;
@@ -6672,14 +6672,14 @@ __host__ __device__ void pDmpx_pp_reflect(
     result[4] = ((t25 - t9) + t5) - 1.0;
     result[5] = t7 + t17;
 }
-__host__ __device__ void pDmpx_pp_reflect(const double3&       x0,
+__host__ __device__ inline void pDmpx_pp_reflect(const double3&       x0,
                                           const double3&       x1,
                                           double               d_hatSqrt,
                                           __GEIGEN__::Vector6& pDmpx)
 {
     pDmpx_pp_reflect(d_hatSqrt, x0.x, x0.y, x0.z, x1.x, x1.y, x1.z, pDmpx.v);
 }
-__host__ __device__ void pDmpx_pp(
+__host__ __device__ inline void pDmpx_pp(
     double d, double x11, double x12, double x13, double x21, double x22, double x23, double result[6])
 {
     double b_result_tmp;
@@ -6892,7 +6892,7 @@ __host__ __device__ void pDmpx_pp(
         - t114_tmp * t27;
 }
 
-__host__ __device__ void pDmpx_pp(const double3&       x0,
+__host__ __device__ inline void pDmpx_pp(const double3&       x0,
                                   const double3&       x1,
                                   double               d_hatSqrt,
                                   __GEIGEN__::Vector6& pDmpx)

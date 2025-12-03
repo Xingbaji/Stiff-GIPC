@@ -9,20 +9,56 @@
 #include "ipc_barrier.cuh"
 #include "GIPC.cuh"
 #include "mlbvh.cuh"  // Contains _d_EE, _d_PP, _d_PE, _d_PT, _compute_epx functions
+#include "FrictionUtils.cuh"
+#include "GIPC_PDerivative.cuh"
 #include <cuda_runtime.h>
 #include <cmath>
+#include "Eigen/Eigen"
+
+using namespace Eigen;
+#define RANK 2
+#define NEWF
 
 //=============================================================================
-// Triplet Write Helper
+// Helper Functions (from GIPC.cu)
 //=============================================================================
+
+template <typename Scalar, int size>
+__device__ __host__ void makePDGeneral_ipc(Eigen::Matrix<Scalar, size, size>& symMtr)
+{
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<Scalar, size, size>> eigen_solver;
+
+    if constexpr(size <= 3)
+        eigen_solver.computeDirect(symMtr);
+    else
+        eigen_solver.compute(symMtr);
+    Eigen::Vector<Scalar, size> eigen_values = eigen_solver.eigenvalues();
+    Eigen::Matrix<Scalar, size, size> eigen_vectors = eigen_solver.eigenvectors();
+
+    if(eigen_values[0] >= 0.0)
+    {
+        return;
+    }
+
+    for(int i = 0; i < size; ++i)
+    {
+        if(eigen_values(i) < 0)
+        {
+            eigen_values(i) = 0;
+        }
+    }
+
+    Eigen::Matrix<Scalar, size, size> D = eigen_values.asDiagonal();
+    symMtr = eigen_solver.eigenvectors() * D * eigen_solver.eigenvectors().transpose();
+}
 
 template <int ROWS, int COLS>
-__device__ inline void write_triplet_ipc(Eigen::Matrix3d*    triplet_value,
-                                         int*                row_ids,
-                                         int*                col_ids,
-                                         const unsigned int* index,
-                                         const double        input[ROWS][COLS],
-                                         const int&          offset)
+__device__ inline void write_triplet(Eigen::Matrix3d*    triplet_value,
+                                     int*                row_ids,
+                                     int*                col_ids,
+                                     const unsigned int* index,
+                                     const double        input[ROWS][COLS],
+                                     const int&          offset)
 {
     int rown = ROWS / 3;
     int coln = COLS / 3;
@@ -47,6 +83,128 @@ __device__ inline void write_triplet_ipc(Eigen::Matrix3d*    triplet_value,
                 }
             }
         }
+    }
+}
+
+
+//=============================================================================
+// Friction Hessian Kernels
+//=============================================================================
+
+__global__ void _calFrictionHessian_gd(const double3*   _vertexes,
+                                       const double3*   _o_vertexes,
+                                       const double3*   _normal,
+                                       const uint32_t*  _last_collisionPair_gd,
+                                       Eigen::Matrix3d* triplet_values,
+                                       int*             row_ids,
+                                       int*             col_ids,
+                                       int              number,
+                                       double           dt,
+                                       double           eps2,
+                                       double*          lastH,
+                                       int              global_offset,
+                                       double           coef)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double                 eps           = sqrt(eps2);
+    unsigned int           gidx          = _last_collisionPair_gd[idx];
+    double                 multiplier_vI = coef * lastH[idx];
+    __GEIGEN__::Matrix3x3d H_vI;
+
+    double3 Vdiff  = __GEIGEN__::__minus(_vertexes[gidx], _o_vertexes[gidx]);
+    double3 normal = *_normal;
+    double3 VProj  = __GEIGEN__::__minus(
+        Vdiff, __GEIGEN__::__s_vec_multiply(normal, __GEIGEN__::__v_vec_dot(Vdiff, normal)));
+    double VProjMag2 = __GEIGEN__::__squaredNorm(VProj);
+
+    if(VProjMag2 > eps2)
+    {
+        double VProjMag = sqrt(VProjMag2);
+
+        __GEIGEN__::Matrix2x2d projH;
+        __GEIGEN__::__set_Mat2x2_val_column(projH, make_double2(0, 0), make_double2(0, 0));
+
+        double  eigenValues[2];
+        int     eigenNum = 0;
+        double2 eigenVecs[2];
+        __GEIGEN__::__makePD2x2(VProj.x * VProj.x * -multiplier_vI / VProjMag2 / VProjMag
+                                    + (multiplier_vI / VProjMag),
+                                VProj.x * VProj.z * -multiplier_vI / VProjMag2 / VProjMag,
+                                VProj.x * VProj.z * -multiplier_vI / VProjMag2 / VProjMag,
+                                VProj.z * VProj.z * -multiplier_vI / VProjMag2 / VProjMag
+                                    + (multiplier_vI / VProjMag),
+                                eigenValues,
+                                eigenNum,
+                                eigenVecs);
+        for(int i = 0; i < eigenNum; i++)
+        {
+            if(eigenValues[i] > 0)
+            {
+                __GEIGEN__::Matrix2x2d eigenMatrix =
+                    __GEIGEN__::__v2_vec2_toMat2x2(eigenVecs[i], eigenVecs[i]);
+                eigenMatrix =
+                    __GEIGEN__::__s_Mat2x2_multiply(eigenMatrix, eigenValues[i]);
+                projH = __GEIGEN__::__Mat2x2_add(projH, eigenMatrix);
+            }
+        }
+
+        __GEIGEN__::__set_Mat_val(H_vI,
+                                  projH.m[0][0],
+                                  0,
+                                  projH.m[0][1],
+                                  0,
+                                  0,
+                                  0,
+                                  projH.m[1][0],
+                                  0,
+                                  projH.m[1][1]);
+    }
+    else
+    {
+        __GEIGEN__::__set_Mat_val(
+            H_vI, (multiplier_vI / eps), 0, 0, 0, 0, 0, 0, 0, (multiplier_vI / eps));
+    }
+
+    write_triplet<3, 3>(triplet_values, row_ids, col_ids, &gidx, H_vI.m, global_offset + idx);
+}
+
+//=============================================================================
+// Friction Gradient Kernels  
+//=============================================================================
+
+__global__ void _calFrictionGradient_gd(const double3* _vertexes,
+                                        const double3* _o_vertexes,
+                                        const double3* _normal,
+                                        const uint32_t* _last_collisionPair_gd,
+                                        double3* _gradient,
+                                        int      number,
+                                        double   dt,
+                                        double   eps2,
+                                        double*  lastH,
+                                        double   coef)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double   eps    = sqrt(eps2);
+    double3  normal = *_normal;
+    uint32_t gidx   = _last_collisionPair_gd[idx];
+    double3  Vdiff  = __GEIGEN__::__minus(_vertexes[gidx], _o_vertexes[gidx]);
+    double3  VProj  = __GEIGEN__::__minus(
+        Vdiff, __GEIGEN__::__s_vec_multiply(normal, __GEIGEN__::__v_vec_dot(Vdiff, normal)));
+    double VProjMag2 = __GEIGEN__::__squaredNorm(VProj);
+    if(VProjMag2 > eps2)
+    {
+        double3 gdf =
+            __GEIGEN__::__s_vec_multiply(VProj, coef * lastH[idx] / sqrt(VProjMag2));
+        _gradient[gidx] = __GEIGEN__::__add(_gradient[gidx], gdf);
+    }
+    else
+    {
+        double3 gdf = __GEIGEN__::__s_vec_multiply(VProj, coef * lastH[idx] / eps);
+        _gradient[gidx] = __GEIGEN__::__add(_gradient[gidx], gdf);
     }
 }
 
@@ -181,7 +339,7 @@ __global__ void _computeGroundGradientAndHessian(const double3*  vertexes,
         __GEIGEN__::Matrix3x3d Hpg = __GEIGEN__::__S_Mat_multiply(nn, Kappa * param);
 
         int pidx = atomicAdd(_gpNum, 1);
-        write_triplet_ipc<3, 3>(triplet_values, row_ids, col_ids, &gidx, Hpg.m, global_offset + idx);
+        write_triplet<3, 3>(triplet_values, row_ids, col_ids, &gidx, Hpg.m, global_offset + idx);
     }
 }
 

@@ -1288,87 +1288,7 @@ __device__ double __cal_Friction_energy(const double3*         _vertexes,
     }
 }
 
-__global__ void _calFrictionHessian_gd(const double3*   _vertexes,
-                                       const double3*   _o_vertexes,
-                                       const double3*   _normal,
-                                       const uint32_t*  _last_collisionPair_gd,
-                                       Eigen::Matrix3d* triplet_values,
-                                       int*             row_ids,
-                                       int*             col_ids,
-                                       int              number,
-                                       double           dt,
-                                       double           eps2,
-                                       double*          lastH,
-                                       int              global_offset,
-                                       double           coef)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    double                 eps           = sqrt(eps2);
-    unsigned int           gidx          = _last_collisionPair_gd[idx];
-    double                 multiplier_vI = coef * lastH[idx];
-    __GEIGEN__::Matrix3x3d H_vI;
-
-    double3 Vdiff  = __GEIGEN__::__minus(_vertexes[gidx], _o_vertexes[gidx]);
-    double3 normal = *_normal;
-    double3 VProj  = __GEIGEN__::__minus(
-        Vdiff, __GEIGEN__::__s_vec_multiply(normal, __GEIGEN__::__v_vec_dot(Vdiff, normal)));
-    double VProjMag2 = __GEIGEN__::__squaredNorm(VProj);
-
-    if(VProjMag2 > eps2)
-    {
-        double VProjMag = sqrt(VProjMag2);
-
-        __GEIGEN__::Matrix2x2d projH;
-        __GEIGEN__::__set_Mat2x2_val_column(projH, make_double2(0, 0), make_double2(0, 0));
-
-        double  eigenValues[2];
-        int     eigenNum = 0;
-        double2 eigenVecs[2];
-        __GEIGEN__::__makePD2x2(VProj.x * VProj.x * -multiplier_vI / VProjMag2 / VProjMag
-                                    + (multiplier_vI / VProjMag),
-                                VProj.x * VProj.z * -multiplier_vI / VProjMag2 / VProjMag,
-                                VProj.x * VProj.z * -multiplier_vI / VProjMag2 / VProjMag,
-                                VProj.z * VProj.z * -multiplier_vI / VProjMag2 / VProjMag
-                                    + (multiplier_vI / VProjMag),
-                                eigenValues,
-                                eigenNum,
-                                eigenVecs);
-        for(int i = 0; i < eigenNum; i++)
-        {
-            if(eigenValues[i] > 0)
-            {
-                __GEIGEN__::Matrix2x2d eigenMatrix =
-                    __GEIGEN__::__v2_vec2_toMat2x2(eigenVecs[i], eigenVecs[i]);
-                eigenMatrix =
-                    __GEIGEN__::__s_Mat2x2_multiply(eigenMatrix, eigenValues[i]);
-                projH = __GEIGEN__::__Mat2x2_add(projH, eigenMatrix);
-            }
-        }
-
-        __GEIGEN__::__set_Mat_val(H_vI,
-                                  projH.m[0][0],
-                                  0,
-                                  projH.m[0][1],
-                                  0,
-                                  0,
-                                  0,
-                                  projH.m[1][0],
-                                  0,
-                                  projH.m[1][1]);
-    }
-    else
-    {
-        __GEIGEN__::__set_Mat_val(
-            H_vI, (multiplier_vI / eps), 0, 0, 0, 0, 0, 0, 0, (multiplier_vI / eps));
-    }
-
-    //H3x3[idx]    = H_vI;
-    //D1Index[idx] = gidx;
-
-    write_triplet<3, 3>(triplet_values, row_ids, col_ids, &gidx, H_vI.m, global_offset + idx);
-}
+// _calFrictionHessian_gd moved to ipc_barrier.cu
 
 __global__ void _calFrictionHessian(const double3*          _vertexes,
                                     const double3*          _o_vertexes,
@@ -4877,47 +4797,7 @@ __global__ void _calBarrierGradientAndHessian(const double3*   _vertexes,
 }
 
 
-// _calSelfCloseVal, _checkSelfCloseVal, _reduct_MSelfDist moved to ipc_barrier.cu
-
-__global__ void _calFrictionGradient_gd(const double3* _vertexes,
-                                        const double3* _o_vertexes,
-                                        const double3* _normal,
-                                        const uint32_t* _last_collisionPair_gd,
-                                        double3* _gradient,
-                                        int      number,
-                                        double   dt,
-                                        double   eps2,
-                                        double*  lastH,
-                                        double   coef)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    double   eps    = sqrt(eps2);
-    double3  normal = *_normal;
-    uint32_t gidx   = _last_collisionPair_gd[idx];
-    double3  Vdiff  = __GEIGEN__::__minus(_vertexes[gidx], _o_vertexes[gidx]);
-    double3  VProj  = __GEIGEN__::__minus(
-        Vdiff, __GEIGEN__::__s_vec_multiply(normal, __GEIGEN__::__v_vec_dot(Vdiff, normal)));
-    double VProjMag2 = __GEIGEN__::__squaredNorm(VProj);
-    if(VProjMag2 > eps2)
-    {
-        double3 gdf =
-            __GEIGEN__::__s_vec_multiply(VProj, coef * lastH[idx] / sqrt(VProjMag2));
-        /*atomicAdd(&(_gradient[gidx].x), gdf.x);
-        atomicAdd(&(_gradient[gidx].y), gdf.y);
-        atomicAdd(&(_gradient[gidx].z), gdf.z);*/
-        _gradient[gidx] = __GEIGEN__::__add(_gradient[gidx], gdf);
-    }
-    else
-    {
-        double3 gdf = __GEIGEN__::__s_vec_multiply(VProj, coef * lastH[idx] / eps);
-        /*atomicAdd(&(_gradient[gidx].x), gdf.x);
-        atomicAdd(&(_gradient[gidx].y), gdf.y);
-        atomicAdd(&(_gradient[gidx].z), gdf.z);*/
-        _gradient[gidx] = __GEIGEN__::__add(_gradient[gidx], gdf);
-    }
-}
+// _calSelfCloseVal, _checkSelfCloseVal, _reduct_MSelfDist, _calFrictionGradient_gd moved to ipc_barrier.cu
 
 __global__ void _calFrictionGradient(const double3*    _vertexes,
                                      const double3*    _o_vertexes,
