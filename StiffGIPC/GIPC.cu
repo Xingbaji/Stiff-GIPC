@@ -22,6 +22,7 @@
 #include <gipc/statistics.h>
 #include <gipc_path.h>
 #include <gipc/utils/timer.h>
+#include "ipc_barrier.cuh"
 
 #include <tbb/parallel_for.h>
 
@@ -475,10 +476,9 @@ __global__ void _reduct_max_double3_to_double(const double3* _double3Dim, double
     double temp =
         std::max(std::max(abs(tempMove.x), abs(tempMove.y)), abs(tempMove.z));
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -534,10 +534,9 @@ __global__ void _reduct_min_double(double* _double1Dim, int number)
     __threadfence();
 
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -593,10 +592,9 @@ __global__ void _reduct_M_double2(double2* _double2Dim, int number)
     __threadfence();
 
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -656,10 +654,9 @@ __global__ void _reduct_max_double(double* _double1Dim, int number)
     __threadfence();
 
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -1023,67 +1020,7 @@ __device__ __host__ inline bool _overlap(const AABB& lhs, const AABB& rhs, const
     return true;
 }
 
-__device__ double _selfConstraintVal(const double3* vertexes, const int4& active)
-{
-    double val;
-    if(active.x >= 0)
-    {
-        if(active.w >= 0)
-        {
-            _d_EE(vertexes[active.x],
-                  vertexes[active.y],
-                  vertexes[active.z],
-                  vertexes[active.w],
-                  val);
-        }
-        else
-        {
-            _d_EE(vertexes[active.x],
-                  vertexes[active.y],
-                  vertexes[active.z],
-                  vertexes[-active.w - 1],
-                  val);
-        }
-    }
-    else
-    {
-        if(active.z < 0)
-        {
-            if(active.y < 0)
-            {
-                _d_PP(vertexes[-active.x - 1], vertexes[-active.y - 1], val);
-            }
-            else
-            {
-                _d_PP(vertexes[-active.x - 1], vertexes[active.y], val);
-            }
-        }
-        else if(active.w < 0)
-        {
-            if(active.y < 0)
-            {
-                _d_PE(vertexes[-active.x - 1],
-                      vertexes[-active.y - 1],
-                      vertexes[active.z],
-                      val);
-            }
-            else
-            {
-                _d_PE(
-                    vertexes[-active.x - 1], vertexes[active.y], vertexes[active.z], val);
-            }
-        }
-        else
-        {
-            _d_PT(vertexes[-active.x - 1],
-                  vertexes[active.y],
-                  vertexes[active.z],
-                  vertexes[active.w],
-                  val);
-        }
-    }
-    return val;
-}
+// _selfConstraintVal moved to ipc_barrier.cu
 
 __device__ double _computeInjectiveStepSize_3d(const double3*  verts,
                                                const double3*  mv,
@@ -1114,11 +1051,6 @@ __device__ double _computeInjectiveStepSize_3d(const double3*  verts,
     z2 = verts[v1].z;
     z3 = verts[v2].z;
     z4 = verts[v3].z;
-
-    int _3Fii0 = v0 * 3;
-    int _3Fii1 = v1 * 3;
-    int _3Fii2 = v2 * 3;
-    int _3Fii3 = v3 * 3;
 
     p1 = -mv[v0].x;
     p2 = -mv[v1].x;
@@ -4945,111 +4877,12 @@ __global__ void _calBarrierGradientAndHessian(const double3*   _vertexes,
 }
 
 
-__global__ void _calSelfCloseVal(const double3* _vertexes,
-                                 const int4*    _collisionPair,
-                                 int4*          _close_collisionPair,
-                                 double*        _close_collisionVal,
-                                 uint32_t*      _close_cpNum,
-                                 double         dTol,
-                                 int            number)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    int4   MMCVIDI = _collisionPair[idx];
-    double dist2   = _selfConstraintVal(_vertexes, MMCVIDI);
-    if(dist2 < dTol)
-    {
-        int tidx                   = atomicAdd(_close_cpNum, 1);
-        _close_collisionPair[tidx] = MMCVIDI;
-        _close_collisionVal[tidx]  = dist2;
-    }
-}
-
-__global__ void _checkSelfCloseVal(const double3* _vertexes,
-                                   int*           _isChange,
-                                   int4*          _close_collisionPair,
-                                   double*        _close_collisionVal,
-                                   int            number)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    int4   MMCVIDI = _close_collisionPair[idx];
-    double dist2   = _selfConstraintVal(_vertexes, MMCVIDI);
-    if(dist2 < _close_collisionVal[idx])
-    {
-        *_isChange = 1;
-    }
-}
-
-
-__global__ void _reduct_MSelfDist(const double3* _vertexes,
-                                  int4*          _collisionPairs,
-                                  double2*       _queue,
-                                  int            number)
-{
-    int                       idof = blockIdx.x * blockDim.x;
-    int                       idx  = threadIdx.x + idof;
-    extern __shared__ double2 sdata[];
-
-    if(idx >= number)
-        return;
-    int4    MMCVIDI = _collisionPairs[idx];
-    double  tempv   = _selfConstraintVal(_vertexes, MMCVIDI);
-    double2 temp    = make_double2(1.0 / tempv, tempv);
-    int     warpTid = threadIdx.x % 32;
-    int     warpId  = (threadIdx.x >> 5);
-    double  nextTp;
-    int     warpNum;
-    //int tidNum = 32;
-    if(blockIdx.x == gridDim.x - 1)
-    {
-        //tidNum = numbers - idof;
-        warpNum = ((number - idof + 31) >> 5);
-    }
-    else
-    {
-        warpNum = ((blockDim.x) >> 5);
-    }
-    for(int i = 1; i < 32; i = (i << 1))
-    {
-        double tempMin = __shfl_down_sync(0xffffffff, temp.x, i);
-        double tempMax = __shfl_down_sync(0xffffffff, temp.y, i);
-        temp.x         = std::max(temp.x, tempMin);
-        temp.y         = std::max(temp.y, tempMax);
-    }
-    if(warpTid == 0)
-    {
-        sdata[warpId] = temp;
-    }
-    __syncthreads();
-    if(threadIdx.x >= warpNum)
-        return;
-    if(warpNum > 1)
-    {
-        //	tidNum = warpNum;
-        temp = sdata[threadIdx.x];
-
-        //	warpNum = ((tidNum + 31) >> 5);
-        for(int i = 1; i < warpNum; i = (i << 1))
-        {
-            double tempMin = __shfl_down_sync(0xffffffff, temp.x, i);
-            double tempMax = __shfl_down_sync(0xffffffff, temp.y, i);
-            temp.x         = std::max(temp.x, tempMin);
-            temp.y         = std::max(temp.y, tempMax);
-        }
-    }
-    if(threadIdx.x == 0)
-    {
-        _queue[blockIdx.x] = temp;
-    }
-}
+// _calSelfCloseVal, _checkSelfCloseVal, _reduct_MSelfDist moved to ipc_barrier.cu
 
 __global__ void _calFrictionGradient_gd(const double3* _vertexes,
                                         const double3* _o_vertexes,
                                         const double3* _normal,
-                                        const const uint32_t* _last_collisionPair_gd,
+                                        const uint32_t* _last_collisionPair_gd,
                                         double3* _gradient,
                                         int      number,
                                         double   dt,
@@ -5088,7 +4921,7 @@ __global__ void _calFrictionGradient_gd(const double3* _vertexes,
 
 __global__ void _calFrictionGradient(const double3*    _vertexes,
                                      const double3*    _o_vertexes,
-                                     const const int4* _last_collisionPair,
+                                     const int4* _last_collisionPair,
                                      double3*          _gradient,
                                      int               number,
                                      double            dt,
@@ -5273,7 +5106,7 @@ __global__ void _calFrictionGradient(const double3*    _vertexes,
 
 __global__ void _calBarrierGradient(const double3*    _vertexes,
                                     const double3*    _rest_vertexes,
-                                    const const int4* _collisionPair,
+                                    const int4* _collisionPair,
                                     double3*          _gradient,
                                     double            dHat,
                                     double            Kappa,
@@ -6432,24 +6265,7 @@ __global__ void _computeSoftConstraintGradient(const double3*  vertexes,
     }
 }
 
-__global__ void _GroundCollisionDetect(const double3*  vertexes,
-                                       const uint32_t* surfVertIds,
-                                       const double*   g_offset,
-                                       const double3*  g_normal,
-                                       uint32_t* _environment_collisionPair,
-                                       uint32_t* _gpNum,
-                                       double    dHat,
-                                       int       number)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    double dist = __GEIGEN__::__v_vec_dot(*g_normal, vertexes[surfVertIds[idx]]) - *g_offset;
-    if(dist * dist > dHat)
-        return;
-
-    _environment_collisionPair[atomicAdd(_gpNum, 1)] = surfVertIds[idx];
-}
+// _GroundCollisionDetect moved to ipc_barrier.cu
 
 __global__ void _getTotalForce(const double3* _force0, double3* _force, int number)
 {
@@ -6462,249 +6278,9 @@ __global__ void _getTotalForce(const double3* _force0, double3* _force, int numb
 }
 
 
-__global__ void _computeGroundGradientAndHessian(const double3* vertexes,
-                                                 const double*  g_offset,
-                                                 const double3* g_normal,
-                                                 const uint32_t* _environment_collisionPair,
-                                                 double3*  gradient,
-                                                 uint32_t* _gpNum,
-                                                 Eigen::Matrix3d* triplet_values,
-                                                 int*   row_ids,
-                                                 int*   col_ids,
-                                                 double dHat,
-                                                 double Kappa,
-                                                 int    global_offset,
-                                                 int    number)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    double3      normal = *g_normal;
-    unsigned int gidx   = _environment_collisionPair[idx];
-    double dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
-    double dist2 = dist * dist;
-
-    double t   = dist2 - dHat;
-    double g_b = t * log(dist2 / dHat) * -2.0 - (t * t) / dist2;
-
-    double H_b = (log(dist2 / dHat) * -2.0 - t * 4.0 / dist2)
-                 + 1.0 / (dist2 * dist2) * (t * t);
-
-    //printf("H_b   dist   g_b    is  %lf  %lf  %lf\n", H_b, dist2, g_b);
-
-    double3 grad = __GEIGEN__::__s_vec_multiply(normal, Kappa * g_b * 2 * dist);
-
-    {
-        atomicAdd(&(gradient[gidx].x), grad.x);
-        atomicAdd(&(gradient[gidx].y), grad.y);
-        atomicAdd(&(gradient[gidx].z), grad.z);
-    }
-
-    double param = 4.0 * H_b * dist2 + 2.0 * g_b;
-    //if(param > 0)
-    {
-        __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(normal, normal);
-        __GEIGEN__::Matrix3x3d Hpg = __GEIGEN__::__S_Mat_multiply(nn, Kappa * param);
-
-        int pidx = atomicAdd(_gpNum, 1);
-        //H3x3[pidx]    = Hpg;
-        //D1Index[pidx] = gidx;
-
-        write_triplet<3, 3>(triplet_values, row_ids, col_ids, &gidx, Hpg.m, global_offset + idx);
-    }
-    //_environment_collisionPair[atomicAdd(_gpNum, 1)] = surfVertIds[idx];
-}
-
-__global__ void _computeGroundGradient(const double3* vertexes,
-                                       const double*  g_offset,
-                                       const double3* g_normal,
-                                       const uint32_t* _environment_collisionPair,
-                                       double3*  gradient,
-                                       uint32_t* _gpNum,
-                                       double    dHat,
-                                       double    Kappa,
-                                       int       number)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    double3 normal = *g_normal;
-    int     gidx   = _environment_collisionPair[idx];
-    double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
-    double  dist2 = dist * dist;
-
-    double t   = dist2 - dHat;
-    double g_b = t * std::log(dist2 / dHat) * -2.0 - (t * t) / dist2;
-
-    //double H_b = (std::log(dist2 / dHat) * -2.0 - t * 4.0 / dist2) + 1.0 / (dist2 * dist2) * (t * t);
-    double3 grad = __GEIGEN__::__s_vec_multiply(normal, Kappa * g_b * 2 * dist);
-
-    {
-        atomicAdd(&(gradient[gidx].x), grad.x);
-        atomicAdd(&(gradient[gidx].y), grad.y);
-        atomicAdd(&(gradient[gidx].z), grad.z);
-    }
-}
-
-__global__ void _computeGroundCloseVal(const double3* vertexes,
-                                       const double*  g_offset,
-                                       const double3* g_normal,
-                                       const uint32_t* _environment_collisionPair,
-                                       double    dTol,
-                                       uint32_t* _closeConstraintID,
-                                       double*   _closeConstraintVal,
-                                       uint32_t* _close_gpNum,
-                                       int       number)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    double3 normal = *g_normal;
-    int     gidx   = _environment_collisionPair[idx];
-    double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
-    double  dist2 = dist * dist;
-
-    if(dist2 < dTol)
-    {
-        int tidx                  = atomicAdd(_close_gpNum, 1);
-        _closeConstraintID[tidx]  = gidx;
-        _closeConstraintVal[tidx] = dist2;
-    }
-}
-
-__global__ void _checkGroundCloseVal(const double3* vertexes,
-                                     const double*  g_offset,
-                                     const double3* g_normal,
-                                     int*           _isChange,
-                                     uint32_t*      _closeConstraintID,
-                                     double*        _closeConstraintVal,
-                                     int            number)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    double3 normal = *g_normal;
-    int     gidx   = _closeConstraintID[idx];
-    double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
-    double  dist2 = dist * dist;
-
-    if(dist2 < _closeConstraintVal[gidx])
-    {
-        *_isChange = 1;
-    }
-}
-
-__global__ void _reduct_MGroundDist(const double3* vertexes,
-                                    const double*  g_offset,
-                                    const double3* g_normal,
-                                    uint32_t*      _environment_collisionPair,
-                                    double2*       _queue,
-                                    int            number)
-{
-    int                       idof = blockIdx.x * blockDim.x;
-    int                       idx  = threadIdx.x + idof;
-    extern __shared__ double2 sdata[];
-
-    if(idx >= number)
-        return;
-    double3 normal = *g_normal;
-    int     gidx   = _environment_collisionPair[idx];
-    double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
-    double  tempv = dist * dist;
-    double2 temp  = make_double2(1.0 / tempv, tempv);
-
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
-    //int tidNum = 32;
-    if(blockIdx.x == gridDim.x - 1)
-    {
-        //tidNum = numbers - idof;
-        warpNum = ((number - idof + 31) >> 5);
-    }
-    else
-    {
-        warpNum = ((blockDim.x) >> 5);
-    }
-    for(int i = 1; i < 32; i = (i << 1))
-    {
-        double tempMin = __shfl_down_sync(0xffffffff, temp.x, i);
-        double tempMax = __shfl_down_sync(0xffffffff, temp.y, i);
-        temp.x         = std::max(temp.x, tempMin);
-        temp.y         = std::max(temp.y, tempMax);
-    }
-    if(warpTid == 0)
-    {
-        sdata[warpId] = temp;
-    }
-    __syncthreads();
-    if(threadIdx.x >= warpNum)
-        return;
-    if(warpNum > 1)
-    {
-        //	tidNum = warpNum;
-        temp = sdata[threadIdx.x];
-
-        //	warpNum = ((tidNum + 31) >> 5);
-        for(int i = 1; i < warpNum; i = (i << 1))
-        {
-            double tempMin = __shfl_down_sync(0xffffffff, temp.x, i);
-            double tempMax = __shfl_down_sync(0xffffffff, temp.y, i);
-            temp.x         = std::max(temp.x, tempMin);
-            temp.y         = std::max(temp.y, tempMax);
-        }
-    }
-    if(threadIdx.x == 0)
-    {
-        _queue[blockIdx.x] = temp;
-    }
-}
-
-__global__ void _computeSelfCloseVal(const double3*  vertexes,
-                                     const double*   g_offset,
-                                     const double3*  g_normal,
-                                     const uint32_t* _environment_collisionPair,
-                                     double          dTol,
-                                     uint32_t*       _closeConstraintID,
-                                     double*         _closeConstraintVal,
-                                     uint32_t*       _close_gpNum,
-                                     int             number)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    double3 normal = *g_normal;
-    int     gidx   = _environment_collisionPair[idx];
-    double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
-    double  dist2 = dist * dist;
-
-    if(dist2 < dTol)
-    {
-        int tidx                  = atomicAdd(_close_gpNum, 1);
-        _closeConstraintID[tidx]  = gidx;
-        _closeConstraintVal[tidx] = dist2;
-    }
-}
-
-
-__global__ void _checkGroundIntersection(const double3* vertexes,
-                                         const double*  g_offset,
-                                         const double3* g_normal,
-                                         const uint32_t* _environment_collisionPair,
-                                         int* _isIntersect,
-                                         int  number)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if(idx >= number)
-        return;
-    double3 normal = *g_normal;
-    int     gidx   = _environment_collisionPair[idx];
-    double  dist = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
-    //printf("%f  %f\n", *g_offset, dist);
-    if(dist < 0)
-        *_isIntersect = -1;
-}
+// _computeGroundGradientAndHessian, _computeGroundGradient, _computeGroundCloseVal,
+// _checkGroundCloseVal, _reduct_MGroundDist, _computeSelfCloseVal, _checkGroundIntersection
+// moved to ipc_barrier.cu
 
 __global__ void _getFrictionEnergy_Reduction_3D(double*        squeue,
                                                 const double3* vertexes,
@@ -6731,10 +6307,9 @@ __global__ void _getFrictionEnergy_Reduction_3D(double*        squeue,
     double temp = __cal_Friction_energy(
         vertexes, o_vertexes, _collisionPair[idx], dt, distCoord[idx], tanBasis[idx], lastH[idx], fricDHat, eps);
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -6795,10 +6370,9 @@ __global__ void _getFrictionEnergy_gd_Reduction_3D(double*        squeue,
     double temp = __cal_Friction_gd_energy(
         vertexes, o_vertexes, _normal, _collisionPair_gd[idx], dt, lastH[idx], eps);
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -6859,10 +6433,9 @@ __global__ void _computeGroundEnergy_Reduction(double*        squeue,
     double  dist2 = dist * dist;
     double  temp  = -(dist2 - dHat) * (dist2 - dHat) * log(dist2 / dHat);
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -6932,10 +6505,9 @@ __global__ void _reduct_min_groundTimeStep_to_double(const double3* vertexes,
     }
     __syncthreads();*/
     //printf("%f\n", temp);
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7005,10 +6577,9 @@ __global__ void _reduct_min_InjectiveTimeStep_to_double(const double3* vertexes,
                                                  ratio,
                                                  errorRate);
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7112,10 +6683,9 @@ __global__ void _reduct_min_selfTimeStep_to_double(const double3* vertexes,
                                0);
     }
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7172,10 +6742,9 @@ __global__ void _reduct_max_cfl_to_double(const double3* moveDir,
     double temp = __GEIGEN__::__norm(moveDir[mSVI[idx]]);
 
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7229,10 +6798,9 @@ __global__ void _reduct_double3Sqn_to_double(const double3* A, double* D, int nu
     double temp = __GEIGEN__::__squaredNorm(A[idx]);
 
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7285,10 +6853,9 @@ __global__ void _reduct_double3Dot_to_double(const double3* A, const double3* B,
     double temp = __GEIGEN__::__v_vec_dot(A[idx], B[idx]);
 
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7344,10 +6911,9 @@ __global__ void _getKineticEnergy_Reduction_3D(
         __GEIGEN__::__squaredNorm(__GEIGEN__::__minus(_vertexes[idx], _xTilta[idx]))
         * _masses[idx] * 0.5;
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7414,10 +6980,9 @@ __global__ void _getBendingEnergy_Reduction(double*        squeue,
         __cal_bending_energy(vertexes, rest_vertexex, edges[idx], adj, length, bendStiff);
     //double temp = 0;
     //printf("%f    %f\n\n\n", lenRate, volRate);
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7485,10 +7050,9 @@ __global__ void _getFEMEnergy_Reduction_3D(double*        squeue,
 #endif
 
     //printf("%f    %f\n\n\n", lenRate, volRate);
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7546,10 +7110,9 @@ __global__ void _computeSoftConstraintEnergy_Reduction(double*        squeue,
     double   d    = motionRate;
     double   temp = d * dis * 0.5;
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7610,10 +7173,9 @@ __global__ void _get_triangleFEMEnergy_Reduction_3D(double*        squeue,
 
 
     //printf("%f    %f\n\n\n", lenRate, volRate);
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7668,10 +7230,9 @@ __global__ void _getRestStableNHKEnergy_Reduction_3D(double*       squeue,
                     - 0.5 * lenRate * log(4.0)))
                   * volume[idx];
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7728,10 +7289,9 @@ __global__ void _getBarrierEnergy_Reduction_3D(double*        squeue,
     double temp =
         __cal_Barrier_energy(vertexes, rest_vertexes, _collisionPair[idx], _Kappa, _dHat);
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7782,10 +7342,9 @@ __global__ void _getDeltaEnergy_Reduction(double* squeue, const double3* b, cons
 
     double temp = __GEIGEN__::__v_vec_dot(b[idx], dx[idx]);
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7837,10 +7396,9 @@ __global__ void __add_reduction(double* mem, int numbers)
 
     __threadfence();
 
-    int    warpTid = threadIdx.x % 32;
-    int    warpId  = (threadIdx.x >> 5);
-    double nextTp;
-    int    warpNum;
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
     //int tidNum = 32;
     if(blockIdx.x == gridDim.x - 1)
     {
@@ -7960,7 +7518,6 @@ __global__ void _updateBoundaryMoveDir(double3* _vertexes,
     if(idx >= numbers)
         return;
 
-    double                 massSum = 0;
     double                 angleX  = PI / 2.5 * ipc_dt * alpha;
     __GEIGEN__::Matrix3x3d rotationL, rotationR;
     __GEIGEN__::__set_Mat_val(
@@ -8222,7 +7779,6 @@ __global__ void _edgeTriIntersectionQuery(const int*     _btype,
     //printf("%f\n", bboxDiagSize2);
     double gapl = 0;  //sqrt(dHat);
     //double dHat = gapl * gapl;// *bboxDiagSize2;
-    unsigned int num_found = 0;
     do
     {
         const uint32_t node_id = *--stack_ptr;
@@ -8305,7 +7861,7 @@ __global__ void _edgeTriIntersectionQuery(const int*     _btype,
 __global__ void _calFrictionLastH_gd(const double3* _vertexes,
                                      const double*  g_offset,
                                      const double3* g_normal,
-                                     const const uint32_t* _collisionPair_environment,
+                                     const uint32_t* _collisionPair_environment,
                                      double*   lambda_lastH_gd,
                                      uint32_t* _collisionPair_last_gd,
                                      double    dHat,
@@ -8329,7 +7885,7 @@ __global__ void _calFrictionLastH_gd(const double3* _vertexes,
 }
 
 __global__ void _calFrictionLastH_DistAndTan(const double3*    _vertexes,
-                                             const const int4* _collisionPair,
+                                             const int4* _collisionPair,
                                              double*           lambda_lastH,
                                              double2*          distCoord,
                                              __GEIGEN__::Matrix3x2d* tanBasis,
@@ -9657,7 +9213,7 @@ void updateNeighborInfo(unsigned int*   _neighborList,
 void calcTetMChash(uint64_t*         _MChash,
                    const double3*    _vertexes,
                    uint4*            tets,
-                   const const AABB* _MaxBv,
+                   const AABB* _MaxBv,
                    const uint32_t*   sortMapVertIndex,
                    int               number)
 {
@@ -9986,9 +9542,6 @@ void GIPC::partitionContactHessian()
         gipc_global_triplet.h_abd_fem_contact_start_id + gipc_global_triplet.abd_fem_contact_num;
     gipc_global_triplet.h_abd_abd_contact_start_id =
         gipc_global_triplet.h_fem_abd_contact_start_id + gipc_global_triplet.fem_abd_contact_num;
-
-
-    int number = gipc_global_triplet.global_collision_triplet_offset;
 
     CUDA_SAFE_CALL(
         cudaMemcpy(gipc_global_triplet.block_row_indices(),
@@ -10562,12 +10115,7 @@ bool GIPC::lineSearch(device_TetraData& TetMesh, double& alpha, const double& cf
 
     m_abd_system->copy_q_to_q_temp(*m_abd_sim_data);
 
-
-    double alpha_SL = alpha;
-
     step_forward(TetMesh, alpha, false);
-
-    bool rehash = true;
 
     buildBVH();
 
@@ -10933,8 +10481,6 @@ void   GIPC::IPC_Solver(device_TetraData& TetMesh)
         stepForward(TetMesh.vertexes, TetMesh.temp_double3Mem, _moveDir, TetMesh.BoundaryType, 1, true, vertexNum);
         //step_forward(TetMesh, 1, true);
 
-        bool rehash = true;
-
         buildBVH();
         int numOfIntersect = 0;
         while(isIntersected(TetMesh))
@@ -10978,7 +10524,6 @@ void   GIPC::IPC_Solver(device_TetraData& TetMesh)
     buildFrictionSets();
 #endif
     animation_fullRate = animation_subRate;
-    int    k           = 0;
     double time0       = 0;
     double time1       = 0;
     double time2       = 0;
