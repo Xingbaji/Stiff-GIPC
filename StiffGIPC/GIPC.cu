@@ -9815,6 +9815,13 @@ void GIPC::initKappa(device_TetraData& TetMesh)
         //CUDA_SAFE_CALL(cudaFree(_gc));
         //CUDA_SAFE_CALL(cudaFree(_GE));
         double minKappa = -gsum / gsnorm;
+
+        double adaptiveKappa = calAdaptiveStiffness(TetMesh);
+        if(adaptiveKappa > minKappa)
+        {
+            minKappa = adaptiveKappa;
+        }
+
         if(minKappa > 0.0)
         {
             Kappa = minKappa;

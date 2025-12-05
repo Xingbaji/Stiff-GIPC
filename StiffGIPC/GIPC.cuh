@@ -166,6 +166,7 @@ class GIPC
     void calBarrierGradientAndHessian(double3* _gradient, double mKappa);
     void calBarrierHessian();
     void calBarrierGradient(double3* _gradient, double mKap);
+    double calAdaptiveStiffness(device_TetraData& TetMesh);
     void calFrictionHessian(device_TetraData& TetMesh);
     void calFrictionGradient(double3* _gradient, device_TetraData& TetMesh);
 
