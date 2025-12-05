@@ -1,14 +1,21 @@
 //
-// ipc_barrier.cuh
-// GIPC - IPC Barrier Functions (Ground/Self Collision Kernels)
+// ipc_collision.cuh
+// GIPC - IPC Collision & Friction Kernels
+//
+// This header contains declarations for:
+// - Ground collision detection and handling
+// - Self collision detection and handling
+// - Friction gradient/hessian computation
+//
+// Barrier gradient/hessian kernels are in barrier_gradient_hessian.cuh
 //
 // Refactored from GIPC.cu
 // Copyright (c) 2024 Kemeng Huang. All rights reserved.
 //
 
 #pragma once
-#ifndef _IPC_BARRIER_H_
-#define _IPC_BARRIER_H_
+#ifndef _IPC_COLLISION_H_
+#define _IPC_COLLISION_H_
 
 #include <cuda_runtime.h>
 #include "gpu_eigen_libs.cuh"
@@ -91,50 +98,15 @@ __global__ void _checkGroundIntersection(const double3*  vertexes,
                                          int             number);
 
 //=============================================================================
-// Barrier Gradient/Hessian Kernels (defined in GIPC.cu)
+// Barrier Gradient/Hessian Kernels
+// Declarations moved to barrier_gradient_hessian.cuh (include separately)
 //=============================================================================
 
-__global__ void _calBarrierGradientAndHessian(const double3*   _vertexes,
-                                              const double3*   _rest_vertexes,
-                                              const int4*      _collisionPair,
-                                              double3*         _gradient,
-                                              Eigen::Matrix3d* triplet_values,
-                                              int*             row_ids,
-                                              int*             col_ids,
-                                              uint32_t*        _cpNum,
-                                              int*             matIndex,
-                                              double           dHat,
-                                              double           Kappa,
-                                              int              offset4,
-                                              int              offset3,
-                                              int              offset2,
-                                              int              number);
-
-__global__ void _calBarrierHessian(const double3*   _vertexes,
-                                   const double3*   _rest_vertexes,
-                                   const int4*      _collisionPair,
-                                   Eigen::Matrix3d* triplet_values,
-                                   int*             row_ids,
-                                   int*             col_ids,
-                                   uint32_t*        _cpNum,
-                                   int*             matIndex,
-                                   double           dHat,
-                                   double           Kappa,
-                                   int              offset4,
-                                   int              offset3,
-                                   int              offset2,
-                                   int              number);
-
-__global__ void _calBarrierGradient(const double3* _vertexes,
-                                    const double3* _rest_vertexes,
-                                    const int4*    _collisionPair,
-                                    double3*       _gradient,
-                                    double         dHat,
-                                    double         Kappa,
-                                    int            number);
+// Note: barrier_gradient_hessian.cuh should be included separately where needed
+// This improves modularity and reduces unnecessary dependencies
 
 //=============================================================================
-// Friction Gradient/Hessian Kernels (defined in GIPC.cu)
+// Friction Gradient/Hessian Kernels (defined in ipc_barrier.cu)
 //=============================================================================
 
 __global__ void _calFrictionHessian(const double3*          _vertexes,
@@ -228,4 +200,4 @@ __global__ void _computeSelfCloseVal(const double3*  vertexes,
                                      uint32_t*       _close_gpNum,
                                      int             number);
 
-#endif // _IPC_BARRIER_H_
+#endif // _IPC_COLLISION_H_

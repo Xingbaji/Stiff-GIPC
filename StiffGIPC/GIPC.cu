@@ -22,7 +22,8 @@
 #include <gipc/statistics.h>
 #include <gipc_path.h>
 #include <gipc/utils/timer.h>
-#include "ipc_barrier.cuh"
+#include "ipc_collision.cuh"              // Collision & friction kernel declarations
+#include "barrier_gradient_hessian.cuh"   // Barrier gradient/hessian kernel declarations
 
 #include <tbb/parallel_for.h>
 

@@ -1,0 +1,1587 @@
+//
+// ipc_cubic_barrier.cu
+// GIPC - Cubic Barrier Functions Implementation (Ground/Self Collision Kernels)
+//
+// Cubic barrier implementation based on ppf-contact-solver
+// Refactored from ipc_barrier.cu to use cubic barrier instead of log barrier
+//
+
+#include "ipc_cubic_barrier.cuh"
+#include "GIPC.cuh"
+#include "mlbvh.cuh"
+#include "FrictionUtils.cuh"
+#include "GIPC_PDerivative.cuh"
+#include <cuda_runtime.h>
+#include <cmath>
+#include "Eigen/Eigen"
+
+using namespace Eigen;
+#define NEWF
+
+//=============================================================================
+// Helper Functions
+//=============================================================================
+
+template <typename Scalar, int size>
+__device__ __host__ void makePDGeneral_cubic(Eigen::Matrix<Scalar, size, size>& symMtr)
+{
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<Scalar, size, size>> eigen_solver;
+
+    if constexpr(size <= 3)
+        eigen_solver.computeDirect(symMtr);
+    else
+        eigen_solver.compute(symMtr);
+    Eigen::Vector<Scalar, size> eigen_values = eigen_solver.eigenvalues();
+    Eigen::Matrix<Scalar, size, size> eigen_vectors = eigen_solver.eigenvectors();
+
+    if(eigen_values[0] >= 0.0)
+    {
+        return;
+    }
+
+    for(int i = 0; i < size; ++i)
+    {
+        if(eigen_values(i) < 0)
+        {
+            eigen_values(i) = 0;
+        }
+    }
+
+    Eigen::Matrix<Scalar, size, size> D = eigen_values.asDiagonal();
+    symMtr = eigen_solver.eigenvectors() * D * eigen_solver.eigenvectors().transpose();
+}
+
+template <int ROWS, int COLS>
+__device__ inline void write_triplet_cubic(Eigen::Matrix3d*    triplet_value,
+                                           int*                row_ids,
+                                           int*                col_ids,
+                                           const unsigned int* index,
+                                           const double        input[ROWS][COLS],
+                                           const int&          offset)
+{
+    int rown = ROWS / 3;
+    int coln = COLS / 3;
+    for(int ii = 0; ii < rown; ii++)
+    {
+        int start = 0;
+        for(int jj = start; jj < coln; jj++)
+        {
+            int kk = ii * rown + jj;
+            int row = index[ii];
+            int col = index[jj];
+            {
+                row_ids[offset + kk] = row;
+                col_ids[offset + kk] = col;
+                for(int iii = 0; iii < 3; iii++)
+                {
+                    for(int jjj = 0; jjj < 3; jjj++)
+                    {
+                        triplet_value[offset + kk](iii, jjj) =
+                            input[ii * 3 + iii][jj * 3 + jjj];
+                    }
+                }
+            }
+        }
+    }
+}
+
+//=============================================================================
+// Cubic Barrier Core Functions (inline device functions)
+//=============================================================================
+
+// Cubic barrier for ground collision: g = distance, ghat = sqrt(dHat)
+// Energy: E = -2/3 * (g - ghat)^3 / ghat
+// Gradient: dE/dg = -2 * (g - ghat)^2 / ghat
+// Curvature: d^2E/dg^2 = 4 * (1 - g/ghat)
+
+__device__ inline double cubic_energy(double g, double ghat)
+{
+    double y = g - ghat;
+    if (y < 0.0) {
+        return -2.0 / 3.0 * y * y * y / ghat;
+    }
+    return 0.0;
+}
+
+__device__ inline double cubic_gradient(double g, double ghat)
+{
+    double y = g - ghat;
+    if (y < 0.0) {
+        return -2.0 * y * y / ghat;
+    }
+    return 0.0;
+}
+
+__device__ inline double cubic_curvature(double g, double ghat)
+{
+    if (g < ghat) {
+        return 4.0 * (1.0 - g / ghat);
+    }
+    return 0.0;
+}
+
+//=============================================================================
+// Friction Hessian Kernels (unchanged from log barrier)
+//=============================================================================
+
+__global__ void _calFrictionHessian_gd_cubic(const double3*   _vertexes,
+                                              const double3*   _o_vertexes,
+                                              const double3*   _normal,
+                                              const uint32_t*  _last_collisionPair_gd,
+                                              Eigen::Matrix3d* triplet_values,
+                                              int*             row_ids,
+                                              int*             col_ids,
+                                              int              number,
+                                              double           dt,
+                                              double           eps2,
+                                              double*          lastH,
+                                              int              global_offset,
+                                              double           coef)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double                 eps           = sqrt(eps2);
+    unsigned int           gidx          = _last_collisionPair_gd[idx];
+    double                 multiplier_vI = coef * lastH[idx];
+    __GEIGEN__::Matrix3x3d H_vI;
+
+    double3 Vdiff  = __GEIGEN__::__minus(_vertexes[gidx], _o_vertexes[gidx]);
+    double3 normal = *_normal;
+    double3 VProj  = __GEIGEN__::__minus(
+        Vdiff, __GEIGEN__::__s_vec_multiply(normal, __GEIGEN__::__v_vec_dot(Vdiff, normal)));
+    double VProjMag2 = __GEIGEN__::__squaredNorm(VProj);
+
+    if(VProjMag2 > eps2)
+    {
+        double VProjMag = sqrt(VProjMag2);
+
+        __GEIGEN__::Matrix2x2d projH;
+        __GEIGEN__::__set_Mat2x2_val_column(projH, make_double2(0, 0), make_double2(0, 0));
+
+        double  eigenValues[2];
+        int     eigenNum = 0;
+        double2 eigenVecs[2];
+        __GEIGEN__::__makePD2x2(VProj.x * VProj.x * -multiplier_vI / VProjMag2 / VProjMag
+                                    + (multiplier_vI / VProjMag),
+                                VProj.x * VProj.z * -multiplier_vI / VProjMag2 / VProjMag,
+                                VProj.x * VProj.z * -multiplier_vI / VProjMag2 / VProjMag,
+                                VProj.z * VProj.z * -multiplier_vI / VProjMag2 / VProjMag
+                                    + (multiplier_vI / VProjMag),
+                                eigenValues,
+                                eigenNum,
+                                eigenVecs);
+        for(int i = 0; i < eigenNum; i++)
+        {
+            if(eigenValues[i] > 0)
+            {
+                __GEIGEN__::Matrix2x2d eigenMatrix =
+                    __GEIGEN__::__v2_vec2_toMat2x2(eigenVecs[i], eigenVecs[i]);
+                eigenMatrix =
+                    __GEIGEN__::__s_Mat2x2_multiply(eigenMatrix, eigenValues[i]);
+                projH = __GEIGEN__::__Mat2x2_add(projH, eigenMatrix);
+            }
+        }
+
+        __GEIGEN__::__set_Mat_val(H_vI,
+                                  projH.m[0][0],
+                                  0,
+                                  projH.m[0][1],
+                                  0,
+                                  0,
+                                  0,
+                                  projH.m[1][0],
+                                  0,
+                                  projH.m[1][1]);
+    }
+    else
+    {
+        __GEIGEN__::__set_Mat_val(
+            H_vI, (multiplier_vI / eps), 0, 0, 0, 0, 0, 0, 0, (multiplier_vI / eps));
+    }
+
+    write_triplet_cubic<3, 3>(triplet_values, row_ids, col_ids, &gidx, H_vI.m, global_offset + idx);
+}
+
+//=============================================================================
+// Friction Gradient Kernels (unchanged from log barrier)
+//=============================================================================
+
+__global__ void _calFrictionGradient_gd_cubic(const double3*  _vertexes,
+                                               const double3*  _o_vertexes,
+                                               const double3*  _normal,
+                                               const uint32_t* _last_collisionPair_gd,
+                                               double3*        _gradient,
+                                               int             number,
+                                               double          dt,
+                                               double          eps2,
+                                               double*         lastH,
+                                               double          coef)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double   eps    = sqrt(eps2);
+    double3  normal = *_normal;
+    uint32_t gidx   = _last_collisionPair_gd[idx];
+    double3  Vdiff  = __GEIGEN__::__minus(_vertexes[gidx], _o_vertexes[gidx]);
+    double3  VProj  = __GEIGEN__::__minus(
+        Vdiff, __GEIGEN__::__s_vec_multiply(normal, __GEIGEN__::__v_vec_dot(Vdiff, normal)));
+    double VProjMag2 = __GEIGEN__::__squaredNorm(VProj);
+    if(VProjMag2 > eps2)
+    {
+        double3 gdf =
+            __GEIGEN__::__s_vec_multiply(VProj, coef * lastH[idx] / sqrt(VProjMag2));
+        _gradient[gidx] = __GEIGEN__::__add(_gradient[gidx], gdf);
+    }
+    else
+    {
+        double3 gdf = __GEIGEN__::__s_vec_multiply(VProj, coef * lastH[idx] / eps);
+        _gradient[gidx] = __GEIGEN__::__add(_gradient[gidx], gdf);
+    }
+}
+
+//=============================================================================
+// Self Constraint Value Device Function
+//=============================================================================
+
+__device__ double _selfConstraintVal_cubic(const double3* _vertexes, const int4& active)
+{
+    double val;
+    if(active.x >= 0)
+    {
+        if(active.w >= 0)
+        {
+            _d_EE(_vertexes[active.x],
+                  _vertexes[active.y],
+                  _vertexes[active.z],
+                  _vertexes[active.w],
+                  val);
+        }
+        else
+        {
+            _d_EE(_vertexes[active.x],
+                  _vertexes[active.y],
+                  _vertexes[active.z],
+                  _vertexes[-active.w - 1],
+                  val);
+        }
+    }
+    else
+    {
+        if(active.z < 0)
+        {
+            if(active.y < 0)
+            {
+                _d_PP(_vertexes[-active.x - 1], _vertexes[-active.y - 1], val);
+            }
+            else
+            {
+                _d_PP(_vertexes[-active.x - 1], _vertexes[active.y], val);
+            }
+        }
+        else if(active.w < 0)
+        {
+            if(active.y < 0)
+            {
+                _d_PE(_vertexes[-active.x - 1],
+                      _vertexes[-active.y - 1],
+                      _vertexes[active.z],
+                      val);
+            }
+            else
+            {
+                _d_PE(
+                    _vertexes[-active.x - 1], _vertexes[active.y], _vertexes[active.z], val);
+            }
+        }
+        else
+        {
+            _d_PT(_vertexes[-active.x - 1],
+                  _vertexes[active.y],
+                  _vertexes[active.z],
+                  _vertexes[active.w],
+                  val);
+        }
+    }
+    return val;
+}
+
+//=============================================================================
+// Ground Collision Kernels (Cubic Barrier)
+//=============================================================================
+
+__global__ void _GroundCollisionDetect_cubic(const double3*  vertexes,
+                                              const uint32_t* surfVertIds,
+                                              const double*   g_offset,
+                                              const double3*  g_normal,
+                                              uint32_t* _environment_collisionPair,
+                                              uint32_t* _gpNum,
+                                              double    dHat,
+                                              int       number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double dist = __GEIGEN__::__v_vec_dot(*g_normal, vertexes[surfVertIds[idx]]) - *g_offset;
+    if(dist * dist > dHat)
+        return;
+
+    _environment_collisionPair[atomicAdd(_gpNum, 1)] = surfVertIds[idx];
+}
+
+__global__ void _computeGroundGradientAndHessian_cubic(const double3*  vertexes,
+                                                        const double*   g_offset,
+                                                        const double3*  g_normal,
+                                                        const uint32_t* _environment_collisionPair,
+                                                        double3*        gradient,
+                                                        uint32_t*       _gpNum,
+                                                        Eigen::Matrix3d* triplet_values,
+                                                        int*             row_ids,
+                                                        int*             col_ids,
+                                                        double           dHat,
+                                                        double           Kappa,
+                                                        int              global_offset,
+                                                        int              number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double3      normal = *g_normal;
+    unsigned int gidx   = _environment_collisionPair[idx];
+    double dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    
+    // Cubic barrier: g = |dist|, ghat = sqrt(dHat)
+    double g = fabs(dist);
+    double ghat = sqrt(dHat);
+    
+    if (g >= ghat) return;  // No barrier contribution
+    
+    // Gradient: dE/dg = -2 * (g - ghat)^2 / ghat
+    double y = g - ghat;
+    double dEdg = -2.0 * y * y / ghat;
+    
+    // Curvature: d^2E/dg^2 = 4 * (1 - g/ghat)
+    double d2Edg2 = 4.0 * (1.0 - g / ghat);
+    
+    // Chain rule: dE/d(dist) = dE/dg * sign(dist)
+    double sign_dist = (dist >= 0) ? 1.0 : -1.0;
+    double3 grad = __GEIGEN__::__s_vec_multiply(normal, Kappa * dEdg * sign_dist);
+
+    {
+        atomicAdd(&(gradient[gidx].x), grad.x);
+        atomicAdd(&(gradient[gidx].y), grad.y);
+        atomicAdd(&(gradient[gidx].z), grad.z);
+    }
+
+    // Hessian: d^2E/d(dist)^2 = d^2E/dg^2 (since (sign)^2 = 1)
+    double param = Kappa * d2Edg2;
+    {
+        __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(normal, normal);
+        __GEIGEN__::Matrix3x3d Hpg = __GEIGEN__::__S_Mat_multiply(nn, param);
+
+        int pidx = atomicAdd(_gpNum, 1);
+        write_triplet_cubic<3, 3>(triplet_values, row_ids, col_ids, &gidx, Hpg.m, global_offset + idx);
+    }
+}
+
+__global__ void _computeGroundGradient_cubic(const double3*  vertexes,
+                                              const double*   g_offset,
+                                              const double3*  g_normal,
+                                              const uint32_t* _environment_collisionPair,
+                                              double3*        gradient,
+                                              uint32_t*       _gpNum,
+                                              double          dHat,
+                                              double          Kappa,
+                                              int             number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double3 normal = *g_normal;
+    int     gidx   = _environment_collisionPair[idx];
+    double  dist   = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    
+    // Cubic barrier
+    double g = fabs(dist);
+    double ghat = sqrt(dHat);
+    
+    if (g >= ghat) return;
+    
+    double y = g - ghat;
+    double dEdg = -2.0 * y * y / ghat;
+    double sign_dist = (dist >= 0) ? 1.0 : -1.0;
+    
+    double3 grad = __GEIGEN__::__s_vec_multiply(normal, Kappa * dEdg * sign_dist);
+
+    {
+        atomicAdd(&(gradient[gidx].x), grad.x);
+        atomicAdd(&(gradient[gidx].y), grad.y);
+        atomicAdd(&(gradient[gidx].z), grad.z);
+    }
+}
+
+__global__ void _computeGroundCloseVal_cubic(const double3*  vertexes,
+                                              const double*   g_offset,
+                                              const double3*  g_normal,
+                                              const uint32_t* _environment_collisionPair,
+                                              double          dTol,
+                                              uint32_t*       _closeConstraintID,
+                                              double*         _closeConstraintVal,
+                                              uint32_t*       _close_gpNum,
+                                              int             number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double3 normal = *g_normal;
+    int     gidx   = _environment_collisionPair[idx];
+    double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    double  dist2 = dist * dist;
+
+    if(dist2 < dTol)
+    {
+        int tidx                  = atomicAdd(_close_gpNum, 1);
+        _closeConstraintID[tidx]  = gidx;
+        _closeConstraintVal[tidx] = dist2;
+    }
+}
+
+__global__ void _checkGroundCloseVal_cubic(const double3* vertexes,
+                                            const double*  g_offset,
+                                            const double3* g_normal,
+                                            int*           _isChange,
+                                            uint32_t*      _closeConstraintID,
+                                            double*        _closeConstraintVal,
+                                            int            number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double3 normal = *g_normal;
+    int     gidx   = _closeConstraintID[idx];
+    double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    double  dist2 = dist * dist;
+
+    if(dist2 < _closeConstraintVal[idx])
+    {
+        *_isChange = 1;
+    }
+}
+
+__global__ void _reduct_MGroundDist_cubic(const double3* vertexes,
+                                           const double*  g_offset,
+                                           const double3* g_normal,
+                                           uint32_t*      _environment_collisionPair,
+                                           double2*       _queue,
+                                           int            number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double3 normal = *g_normal;
+    int     gidx   = _environment_collisionPair[idx];
+    double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    double  dist2 = dist * dist;
+
+    _queue[idx].x = dist2;
+    _queue[idx].y = dist2;
+}
+
+__global__ void _checkGroundIntersection_cubic(const double3*  vertexes,
+                                                const double*   g_offset,
+                                                const double3*  g_normal,
+                                                const uint32_t* _environment_collisionPair,
+                                                int*            _isIntersect,
+                                                int             number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    double3 normal = *g_normal;
+    int     gidx   = _environment_collisionPair[idx];
+    double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    
+    if(dist < 0)
+    {
+        *_isIntersect = 1;
+    }
+}
+
+//=============================================================================
+// Self Collision Kernels
+//=============================================================================
+
+__global__ void _calSelfCloseVal_cubic(const double3* _vertexes,
+                                        const int4*    _collisionPair,
+                                        int4*          _close_collisionPair,
+                                        double*        _close_collisionVal,
+                                        uint32_t*      _close_cpNum,
+                                        double         dTol,
+                                        int            number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    int4 active = _collisionPair[idx];
+    double val = _selfConstraintVal_cubic(_vertexes, active);
+    if(val < dTol)
+    {
+        int tidx = atomicAdd(_close_cpNum, 1);
+        _close_collisionPair[tidx] = active;
+        _close_collisionVal[tidx] = val;
+    }
+}
+
+__global__ void _checkSelfCloseVal_cubic(const double3* _vertexes,
+                                          int*           _isChange,
+                                          int4*          _close_collisionPair,
+                                          double*        _close_collisionVal,
+                                          int            number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    int4 active = _close_collisionPair[idx];
+    double val = _selfConstraintVal_cubic(_vertexes, active);
+    if(val < _close_collisionVal[idx])
+    {
+        *_isChange = 1;
+    }
+}
+
+__global__ void _reduct_MSelfDist_cubic(const double3* _vertexes,
+                                         int4*          _collisionPairs,
+                                         double2*       _queue,
+                                         int            number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    int4 active = _collisionPairs[idx];
+    double val = _selfConstraintVal_cubic(_vertexes, active);
+    _queue[idx].x = val;
+    _queue[idx].y = val;
+}
+
+//=============================================================================
+// Barrier Gradient Kernel (Cubic Barrier)
+//=============================================================================
+
+__global__ void _calBarrierGradient_cubic(const double3*    _vertexes,
+                                           const double3*    _rest_vertexes,
+                                           const int4* _collisionPair,
+                                           double3*          _gradient,
+                                           double            dHat,
+                                           double            Kappa,
+                                           int               number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    int4   MMCVIDI   = _collisionPair[idx];
+    double dHat_sqrt = sqrt(dHat);
+    
+    if(MMCVIDI.x >= 0)
+    {
+        if(MMCVIDI.w >= 0)
+        {
+            // Edge-Edge collision
+#ifdef NEWF
+            double dis;
+            _d_EE(_vertexes[MMCVIDI.x],
+                  _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z],
+                  _vertexes[MMCVIDI.w],
+                  dis);
+            dis = sqrt(dis);
+            double d_hat_sqrt = sqrt(dHat);
+            __GEIGEN__::Matrix12x9d PFPxT;
+            pFpx_ee2(_vertexes[MMCVIDI.x],
+                     _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z],
+                     _vertexes[MMCVIDI.w],
+                     d_hat_sqrt,
+                     PFPxT);
+            
+            // s = dis / d_hat_sqrt, normalized distance
+            double s = dis / d_hat_sqrt;
+            
+            __GEIGEN__::Vector9 tmp;
+            tmp.v[0] = tmp.v[1] = tmp.v[2] = tmp.v[3] = tmp.v[4] = tmp.v[5] =
+                tmp.v[6] = tmp.v[7] = 0;
+            tmp.v[8] = s;
+            
+            // Cubic barrier: dE/ds = -2 * Kappa * dHat * (s - 1)^2 when s < 1
+            // flatten_pk1 coefficient = dE/ds / s (since tmp.v[8] = s)
+            double coeff = 0.0;
+            if (s < 1.0) {
+                double y = s - 1.0;
+                coeff = -2.0 * Kappa * dHat * y * y / s;
+            }
+            
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__s_vec9_multiply(tmp, coeff);
+            
+            __GEIGEN__::Vector12 gradient_vec =
+                __GEIGEN__::__M12x9_v9_multiply((PFPxT), flatten_pk1);
+#else
+            double3 v0 = __GEIGEN__::__minus(_vertexes[MMCVIDI.y], _vertexes[MMCVIDI.x]);
+            double3 v1 = __GEIGEN__::__minus(_vertexes[MMCVIDI.z], _vertexes[MMCVIDI.x]);
+            double3 v2 = __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.x]);
+            __GEIGEN__::Matrix3x3d Ds;
+            __GEIGEN__::__set_Mat_val_column(Ds, v0, v1, v2);
+            double3 normal = __GEIGEN__::__normalized(__GEIGEN__::__v_vec_cross(
+                v0, __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.z])));
+            double dis = __GEIGEN__::__v_vec_dot(v1, normal);
+            if(dis < 0) {
+                normal = make_double3(-normal.x, -normal.y, -normal.z);
+                dis = -dis;
+            }
+
+            double3 pos2 = __GEIGEN__::__add(_vertexes[MMCVIDI.z],
+                              __GEIGEN__::__s_vec_multiply(normal, dHat_sqrt - dis));
+            double3 pos3 = __GEIGEN__::__add(_vertexes[MMCVIDI.w],
+                              __GEIGEN__::__s_vec_multiply(normal, dHat_sqrt - dis));
+
+            double3 u0 = v0;
+            double3 u1 = __GEIGEN__::__minus(pos2, _vertexes[MMCVIDI.x]);
+            double3 u2 = __GEIGEN__::__minus(pos3, _vertexes[MMCVIDI.x]);
+
+            __GEIGEN__::Matrix3x3d Dm, DmInv;
+            __GEIGEN__::__set_Mat_val_column(Dm, u0, u1, u2);
+            __GEIGEN__::__Inverse(Dm, DmInv);
+
+            __GEIGEN__::Matrix3x3d F;
+            __GEIGEN__::__M_Mat_multiply(Ds, DmInv, F);
+
+            double3 FxN = __GEIGEN__::__M_v_multiply(F, normal);
+            double I5 = __GEIGEN__::__squaredNorm(FxN);
+            double s = sqrt(I5);
+
+            __GEIGEN__::Matrix9x12d PFPx = __computePFDsPX3D_double(DmInv);
+
+            __GEIGEN__::Matrix3x3d fnn;
+            __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(normal, normal);
+            __GEIGEN__::__M_Mat_multiply(F, nn, fnn);
+
+            __GEIGEN__::Vector9 tmp = __GEIGEN__::__Mat3x3_to_vec9_double(fnn);
+
+            // Cubic barrier coefficient
+            double coeff = 0.0;
+            if (s < 1.0) {
+                double y = s - 1.0;
+                coeff = -2.0 * Kappa * dHat * y * y / s;
+            }
+
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__s_vec9_multiply(tmp, coeff);
+            __GEIGEN__::Vector12 gradient_vec =
+                __GEIGEN__::__M12x9_v9_multiply(__GEIGEN__::__Transpose9x12(PFPx), flatten_pk1);
+#endif
+
+            {
+                atomicAdd(&(_gradient[MMCVIDI.x].x), gradient_vec.v[0]);
+                atomicAdd(&(_gradient[MMCVIDI.x].y), gradient_vec.v[1]);
+                atomicAdd(&(_gradient[MMCVIDI.x].z), gradient_vec.v[2]);
+                atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+                atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+                atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+                atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+                atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+                atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+                atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+            }
+        }
+        else
+        {
+            // EE-Parallel case with mollifier
+            MMCVIDI.w = -MMCVIDI.w - 1;
+            double3 v0 = __GEIGEN__::__minus(_vertexes[MMCVIDI.y], _vertexes[MMCVIDI.x]);
+            double3 v1 = __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.z]);
+            double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1));
+            double I1 = c * c;
+            if(I1 == 0) return;
+            
+            double dis;
+            _d_EE(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            double I2 = dis / dHat;
+            dis = sqrt(dis);
+            double s2 = sqrt(I2);  // s2 = dis / dHat_sqrt
+
+            __GEIGEN__::Matrix3x3d F;
+            __GEIGEN__::__set_Mat_val(F, 1, 0, 0, 0, c, 0, 0, 0, dis / dHat_sqrt);
+            double3 n1 = make_double3(0, 1, 0);
+            double3 n2 = make_double3(0, 0, 1);
+
+            double eps_x = _compute_epx(_rest_vertexes[MMCVIDI.x],
+                                        _rest_vertexes[MMCVIDI.y],
+                                        _rest_vertexes[MMCVIDI.z],
+                                        _rest_vertexes[MMCVIDI.w]);
+
+            __GEIGEN__::Matrix3x3d g1, g2;
+            __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(n1, n1);
+            __GEIGEN__::__M_Mat_multiply(F, nn, g1);
+            nn = __GEIGEN__::__v_vec_toMat(n2, n2);
+            __GEIGEN__::__M_Mat_multiply(F, nn, g2);
+
+            __GEIGEN__::Vector9 flatten_g1 = __GEIGEN__::__Mat3x3_to_vec9_double(g1);
+            __GEIGEN__::Vector9 flatten_g2 = __GEIGEN__::__Mat3x3_to_vec9_double(g2);
+
+            __GEIGEN__::Matrix12x9d PFPx;
+            pFpx_pee(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w],
+                     dHat_sqrt, PFPx);
+
+            // Cubic barrier with mollifier for parallel edges
+            // E = m(I1) * b(I2), where m is mollifier and b is barrier
+            // dE/dI1 = dm/dI1 * b(I2)
+            // dE/dI2 = m(I1) * db/dI2
+            
+            // Mollifier: m(I1) = (I1 - eps_x)^2 / eps_x^2 when I1 < eps_x, else 1
+            // For cubic barrier: b(s2) = -2/3 * (s2-1)^3 when s2 < 1
+            //                    db/ds2 = -2 * (s2-1)^2
+            // dI2/ds2 = 2*s2, so db/dI2 = db/ds2 / (2*s2)
+            
+            double p1 = 0.0, p2 = 0.0;
+            if (s2 < 1.0 && I1 < eps_x) {
+                double y2 = s2 - 1.0;
+                double moll = (I1 - eps_x) * (I1 - eps_x) / (eps_x * eps_x);
+                double dmoll_dI1 = 2.0 * (I1 - eps_x) / (eps_x * eps_x);
+                double barrier = -2.0 / 3.0 * y2 * y2 * y2;
+                double dbarrier_ds2 = -2.0 * y2 * y2;
+                
+                p1 = Kappa * dmoll_dI1 * barrier * dHat;
+                p2 = Kappa * moll * dbarrier_ds2 * dHat / s2;
+            } else if (s2 < 1.0) {
+                double y2 = s2 - 1.0;
+                double dbarrier_ds2 = -2.0 * y2 * y2;
+                p2 = Kappa * dbarrier_ds2 * dHat / s2;
+            }
+
+            __GEIGEN__::Vector9 flatten_pk1 =
+                __GEIGEN__::__add9(__GEIGEN__::__s_vec9_multiply(flatten_g1, p1),
+                                   __GEIGEN__::__s_vec9_multiply(flatten_g2, p2));
+            __GEIGEN__::Vector12 gradient_vec =
+                __GEIGEN__::__M12x9_v9_multiply(PFPx, flatten_pk1);
+
+            {
+                atomicAdd(&(_gradient[MMCVIDI.x].x), gradient_vec.v[0]);
+                atomicAdd(&(_gradient[MMCVIDI.x].y), gradient_vec.v[1]);
+                atomicAdd(&(_gradient[MMCVIDI.x].z), gradient_vec.v[2]);
+                atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+                atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+                atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+                atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+                atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+                atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+                atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+            }
+        }
+    }
+    else
+    {
+        // Point-based collisions
+        int v0I = -MMCVIDI.x - 1;
+        if(MMCVIDI.z < 0)
+        {
+            if(MMCVIDI.y < 0)
+            {
+                // PP-Mollified
+                MMCVIDI.y = -MMCVIDI.y - 1;
+                MMCVIDI.z = -MMCVIDI.z - 1;
+                MMCVIDI.w = -MMCVIDI.w - 1;
+                MMCVIDI.x = v0I;
+                
+                double3 v0 = __GEIGEN__::__minus(_vertexes[MMCVIDI.z], _vertexes[MMCVIDI.x]);
+                double3 v1 = __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.y]);
+                double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1));
+                double I1 = c * c;
+                if(I1 == 0) return;
+                
+                double dis;
+                _d_PP(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y], dis);
+                double I2 = dis / dHat;
+                dis = sqrt(dis);
+                double s2 = sqrt(I2);
+
+                double eps_x = _compute_epx(_rest_vertexes[MMCVIDI.x],
+                                            _rest_vertexes[MMCVIDI.z],
+                                            _rest_vertexes[MMCVIDI.y],
+                                            _rest_vertexes[MMCVIDI.w]);
+
+                __GEIGEN__::Matrix3x3d F;
+                __GEIGEN__::__set_Mat_val(F, 1, 0, 0, 0, c, 0, 0, 0, dis / dHat_sqrt);
+                double3 n1 = make_double3(0, 1, 0);
+                double3 n2 = make_double3(0, 0, 1);
+
+                __GEIGEN__::Matrix3x3d g1, g2;
+                __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(n1, n1);
+                __GEIGEN__::__M_Mat_multiply(F, nn, g1);
+                nn = __GEIGEN__::__v_vec_toMat(n2, n2);
+                __GEIGEN__::__M_Mat_multiply(F, nn, g2);
+
+                __GEIGEN__::Vector9 flatten_g1 = __GEIGEN__::__Mat3x3_to_vec9_double(g1);
+                __GEIGEN__::Vector9 flatten_g2 = __GEIGEN__::__Mat3x3_to_vec9_double(g2);
+
+                __GEIGEN__::Matrix12x9d PFPx;
+                pFpx_ppp(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                         _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w],
+                         dHat_sqrt, PFPx);
+
+                double p1 = 0.0, p2 = 0.0;
+                if (s2 < 1.0 && I1 < eps_x) {
+                    double y2 = s2 - 1.0;
+                    double moll = (I1 - eps_x) * (I1 - eps_x) / (eps_x * eps_x);
+                    double dmoll_dI1 = 2.0 * (I1 - eps_x) / (eps_x * eps_x);
+                    double barrier = -2.0 / 3.0 * y2 * y2 * y2;
+                    double dbarrier_ds2 = -2.0 * y2 * y2;
+                    
+                    p1 = Kappa * dmoll_dI1 * barrier * dHat;
+                    p2 = Kappa * moll * dbarrier_ds2 * dHat / s2;
+                } else if (s2 < 1.0) {
+                    double y2 = s2 - 1.0;
+                    double dbarrier_ds2 = -2.0 * y2 * y2;
+                    p2 = Kappa * dbarrier_ds2 * dHat / s2;
+                }
+
+                __GEIGEN__::Vector9 flatten_pk1 =
+                    __GEIGEN__::__add9(__GEIGEN__::__s_vec9_multiply(flatten_g1, p1),
+                                       __GEIGEN__::__s_vec9_multiply(flatten_g2, p2));
+                __GEIGEN__::Vector12 gradient_vec =
+                    __GEIGEN__::__M12x9_v9_multiply(PFPx, flatten_pk1);
+
+                {
+                    atomicAdd(&(_gradient[MMCVIDI.x].x), gradient_vec.v[0]);
+                    atomicAdd(&(_gradient[MMCVIDI.x].y), gradient_vec.v[1]);
+                    atomicAdd(&(_gradient[MMCVIDI.x].z), gradient_vec.v[2]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+                    atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+                    atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+                    atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+                    atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+                    atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+                    atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+                }
+            }
+            else
+            {
+                // PP standard
+#ifdef NEWF
+                double dis;
+                _d_PP(_vertexes[v0I], _vertexes[MMCVIDI.y], dis);
+                dis = sqrt(dis);
+                double d_hat_sqrt = sqrt(dHat);
+                __GEIGEN__::Vector6 PFPxT;
+                pFpx_pp2(_vertexes[v0I], _vertexes[MMCVIDI.y], d_hat_sqrt, PFPxT);
+                
+                double s = dis / d_hat_sqrt;
+                double fnn = s;
+
+                double coeff = 0.0;
+                if (s < 1.0) {
+                    double y = s - 1.0;
+                    coeff = -2.0 * Kappa * dHat * y * y / s;
+                }
+                double flatten_pk1 = fnn * coeff;
+
+                __GEIGEN__::Vector6 gradient_vec =
+                    __GEIGEN__::__s_vec6_multiply(PFPxT, flatten_pk1);
+#else
+                double3 v0 = __GEIGEN__::__minus(_vertexes[MMCVIDI.y], _vertexes[v0I]);
+                double dis = __GEIGEN__::__norm(v0);
+                double s = dis / dHat_sqrt;
+                
+                double3 vec_normal = __GEIGEN__::__normalized(make_double3(-v0.x, -v0.y, -v0.z));
+                double3 target = make_double3(0, 1, 0);
+                double3 vec = __GEIGEN__::__v_vec_cross(vec_normal, target);
+                double cos_val = __GEIGEN__::__v_vec_dot(vec_normal, target);
+                __GEIGEN__::Matrix3x3d rotation;
+                __GEIGEN__::__set_Mat_val(rotation, 1, 0, 0, 0, 1, 0, 0, 0, 1);
+                
+                if(cos_val + 1 == 0) {
+                    rotation.m[0][0] = -1;
+                    rotation.m[1][1] = -1;
+                } else {
+                    __GEIGEN__::Matrix3x3d cross_vec;
+                    __GEIGEN__::__set_Mat_val(cross_vec, 0, -vec.z, vec.y, vec.z, 0, -vec.x, -vec.y, vec.x, 0);
+                    rotation = __GEIGEN__::__Mat_add(rotation,
+                        __GEIGEN__::__Mat_add(cross_vec,
+                            __GEIGEN__::__S_Mat_multiply(
+                                __GEIGEN__::__M_Mat_multiply(cross_vec, cross_vec),
+                                1.0 / (1 + cos_val))));
+                }
+
+                double3 pos0 = __GEIGEN__::__add(_vertexes[v0I],
+                    __GEIGEN__::__s_vec_multiply(vec_normal, dHat_sqrt - dis));
+                double3 rotate_uv0 = __GEIGEN__::__M_v_multiply(rotation, pos0);
+                double3 rotate_uv1 = __GEIGEN__::__M_v_multiply(rotation, _vertexes[MMCVIDI.y]);
+
+                double u0 = rotate_uv1.y - rotate_uv0.y;
+                double DmInv = 1 / u0;
+                double3 Ds = v0;
+
+                double3 F_vec = __GEIGEN__::__s_vec_multiply(Ds, DmInv);
+                double I5 = __GEIGEN__::__squaredNorm(F_vec);
+                double s_alt = sqrt(I5);
+
+                double coeff = 0.0;
+                if (s_alt < 1.0) {
+                    double y = s_alt - 1.0;
+                    coeff = -2.0 * Kappa * dHat * y * y / s_alt;
+                }
+
+                double3 flatten_pk1 = __GEIGEN__::__s_vec_multiply(F_vec, coeff);
+                __GEIGEN__::Matrix3x6d PFPx = __computePFDsPX3D_3x6_double(DmInv);
+                __GEIGEN__::Vector6 gradient_vec =
+                    __GEIGEN__::__M6x3_v3_multiply(__GEIGEN__::__Transpose3x6(PFPx), flatten_pk1);
+#endif
+                {
+                    atomicAdd(&(_gradient[v0I].x), gradient_vec.v[0]);
+                    atomicAdd(&(_gradient[v0I].y), gradient_vec.v[1]);
+                    atomicAdd(&(_gradient[v0I].z), gradient_vec.v[2]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+                }
+            }
+        }
+        else if(MMCVIDI.w < 0)
+        {
+            if(MMCVIDI.y < 0)
+            {
+                // PE-Mollified
+                MMCVIDI.y = -MMCVIDI.y - 1;
+                MMCVIDI.x = v0I;
+                MMCVIDI.w = -MMCVIDI.w - 1;
+                
+                double3 v0 = __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.x]);
+                double3 v1 = __GEIGEN__::__minus(_vertexes[MMCVIDI.z], _vertexes[MMCVIDI.y]);
+                double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1));
+                double I1 = c * c;
+                if(I1 == 0) return;
+                
+                double dis;
+                _d_PE(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], dis);
+                double I2 = dis / dHat;
+                dis = sqrt(dis);
+                double s2 = sqrt(I2);
+
+                double eps_x = _compute_epx(_rest_vertexes[MMCVIDI.x],
+                                            _rest_vertexes[MMCVIDI.w],
+                                            _rest_vertexes[MMCVIDI.y],
+                                            _rest_vertexes[MMCVIDI.z]);
+
+                __GEIGEN__::Matrix3x3d F;
+                __GEIGEN__::__set_Mat_val(F, 1, 0, 0, 0, c, 0, 0, 0, dis / dHat_sqrt);
+                double3 n1 = make_double3(0, 1, 0);
+                double3 n2 = make_double3(0, 0, 1);
+
+                __GEIGEN__::Matrix3x3d g1, g2;
+                __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(n1, n1);
+                __GEIGEN__::__M_Mat_multiply(F, nn, g1);
+                nn = __GEIGEN__::__v_vec_toMat(n2, n2);
+                __GEIGEN__::__M_Mat_multiply(F, nn, g2);
+
+                __GEIGEN__::Vector9 flatten_g1 = __GEIGEN__::__Mat3x3_to_vec9_double(g1);
+                __GEIGEN__::Vector9 flatten_g2 = __GEIGEN__::__Mat3x3_to_vec9_double(g2);
+
+                __GEIGEN__::Matrix12x9d PFPx;
+                pFpx_ppe(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                         _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w],
+                         dHat_sqrt, PFPx);
+
+                double p1 = 0.0, p2 = 0.0;
+                if (s2 < 1.0 && I1 < eps_x) {
+                    double y2 = s2 - 1.0;
+                    double moll = (I1 - eps_x) * (I1 - eps_x) / (eps_x * eps_x);
+                    double dmoll_dI1 = 2.0 * (I1 - eps_x) / (eps_x * eps_x);
+                    double barrier = -2.0 / 3.0 * y2 * y2 * y2;
+                    double dbarrier_ds2 = -2.0 * y2 * y2;
+                    
+                    p1 = Kappa * dmoll_dI1 * barrier * dHat;
+                    p2 = Kappa * moll * dbarrier_ds2 * dHat / s2;
+                } else if (s2 < 1.0) {
+                    double y2 = s2 - 1.0;
+                    double dbarrier_ds2 = -2.0 * y2 * y2;
+                    p2 = Kappa * dbarrier_ds2 * dHat / s2;
+                }
+
+                __GEIGEN__::Vector9 flatten_pk1 =
+                    __GEIGEN__::__add9(__GEIGEN__::__s_vec9_multiply(flatten_g1, p1),
+                                       __GEIGEN__::__s_vec9_multiply(flatten_g2, p2));
+                __GEIGEN__::Vector12 gradient_vec =
+                    __GEIGEN__::__M12x9_v9_multiply(PFPx, flatten_pk1);
+
+                {
+                    atomicAdd(&(_gradient[MMCVIDI.x].x), gradient_vec.v[0]);
+                    atomicAdd(&(_gradient[MMCVIDI.x].y), gradient_vec.v[1]);
+                    atomicAdd(&(_gradient[MMCVIDI.x].z), gradient_vec.v[2]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+                    atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+                    atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+                    atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+                    atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+                    atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+                    atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+                }
+            }
+            else
+            {
+                // PE standard
+#ifdef NEWF
+                double dis;
+                _d_PE(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], dis);
+                dis = sqrt(dis);
+                double d_hat_sqrt = sqrt(dHat);
+                __GEIGEN__::Matrix9x4d PFPxT;
+                pFpx_pe2(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], d_hat_sqrt, PFPxT);
+                
+                double s = dis / d_hat_sqrt;
+                __GEIGEN__::Vector4 fnn;
+                fnn.v[0] = fnn.v[1] = fnn.v[2] = 0;
+                fnn.v[3] = s;
+
+                double coeff = 0.0;
+                if (s < 1.0) {
+                    double y = s - 1.0;
+                    coeff = -2.0 * Kappa * dHat * y * y / s;
+                }
+
+                __GEIGEN__::Vector4 flatten_pk1 = __GEIGEN__::__s_vec4_multiply(fnn, coeff);
+                __GEIGEN__::Vector9 gradient_vec = __GEIGEN__::__M9x4_v4_multiply(PFPxT, flatten_pk1);
+#else
+                double3 v0 = __GEIGEN__::__minus(_vertexes[MMCVIDI.y], _vertexes[v0I]);
+                double3 v1 = __GEIGEN__::__minus(_vertexes[MMCVIDI.z], _vertexes[v0I]);
+
+                __GEIGEN__::Matrix3x2d Ds;
+                __GEIGEN__::__set_Mat3x2_val_column(Ds, v0, v1);
+
+                double3 triangle_normal = __GEIGEN__::__normalized(__GEIGEN__::__v_vec_cross(v0, v1));
+                double3 target = make_double3(0, 1, 0);
+                double3 vec = __GEIGEN__::__v_vec_cross(triangle_normal, target);
+                double cos_val = __GEIGEN__::__v_vec_dot(triangle_normal, target);
+
+                double3 edge_normal = __GEIGEN__::__normalized(__GEIGEN__::__v_vec_cross(
+                    __GEIGEN__::__minus(_vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z]), triangle_normal));
+                double dis = __GEIGEN__::__v_vec_dot(
+                    __GEIGEN__::__minus(_vertexes[v0I], _vertexes[MMCVIDI.y]), edge_normal);
+
+                __GEIGEN__::Matrix3x3d rotation;
+                __GEIGEN__::__set_Mat_val(rotation, 1, 0, 0, 0, 1, 0, 0, 0, 1);
+
+                if(cos_val + 1 == 0) {
+                    rotation.m[0][0] = -1;
+                    rotation.m[1][1] = -1;
+                } else {
+                    __GEIGEN__::Matrix3x3d cross_vec;
+                    __GEIGEN__::__set_Mat_val(cross_vec, 0, -vec.z, vec.y, vec.z, 0, -vec.x, -vec.y, vec.x, 0);
+                    rotation = __GEIGEN__::__Mat_add(rotation,
+                        __GEIGEN__::__Mat_add(cross_vec,
+                            __GEIGEN__::__S_Mat_multiply(
+                                __GEIGEN__::__M_Mat_multiply(cross_vec, cross_vec),
+                                1.0 / (1 + cos_val))));
+                }
+
+                double3 pos0 = __GEIGEN__::__add(_vertexes[v0I],
+                    __GEIGEN__::__s_vec_multiply(edge_normal, dHat_sqrt - dis));
+                double3 rotate_uv0 = __GEIGEN__::__M_v_multiply(rotation, pos0);
+                double3 rotate_uv1 = __GEIGEN__::__M_v_multiply(rotation, _vertexes[MMCVIDI.y]);
+                double3 rotate_uv2 = __GEIGEN__::__M_v_multiply(rotation, _vertexes[MMCVIDI.z]);
+                double3 rotate_normal = __GEIGEN__::__M_v_multiply(rotation, edge_normal);
+
+                double2 uv0 = make_double2(rotate_uv0.x, rotate_uv0.z);
+                double2 uv1 = make_double2(rotate_uv1.x, rotate_uv1.z);
+                double2 uv2 = make_double2(rotate_uv2.x, rotate_uv2.z);
+                double2 normal2d = make_double2(rotate_normal.x, rotate_normal.z);
+
+                double2 u0 = __GEIGEN__::__minus_v2(uv1, uv0);
+                double2 u1 = __GEIGEN__::__minus_v2(uv2, uv0);
+
+                __GEIGEN__::Matrix2x2d Dm;
+                __GEIGEN__::__set_Mat2x2_val_column(Dm, u0, u1);
+                __GEIGEN__::Matrix2x2d DmInv;
+                __GEIGEN__::__Inverse2x2(Dm, DmInv);
+
+                __GEIGEN__::Matrix3x2d F = __GEIGEN__::__M3x2_M2x2_Multiply(Ds, DmInv);
+                double3 FxN = __GEIGEN__::__M3x2_v2_multiply(F, normal2d);
+                double I5 = __GEIGEN__::__squaredNorm(FxN);
+                double s = sqrt(I5);
+
+                __GEIGEN__::Matrix3x2d fnn;
+                __GEIGEN__::Matrix2x2d nn = __GEIGEN__::__v2_vec2_toMat2x2(normal2d, normal2d);
+                fnn = __GEIGEN__::__M3x2_M2x2_Multiply(F, nn);
+
+                __GEIGEN__::Vector6 tmp = __GEIGEN__::__Mat3x2_to_vec6_double(fnn);
+
+                double coeff = 0.0;
+                if (s < 1.0) {
+                    double y = s - 1.0;
+                    coeff = -2.0 * Kappa * dHat * y * y / s;
+                }
+
+                __GEIGEN__::Vector6 flatten_pk1 = __GEIGEN__::__s_vec6_multiply(tmp, coeff);
+                __GEIGEN__::Matrix6x9d PFPx = __computePFDsPX3D_6x9_double(DmInv);
+                __GEIGEN__::Vector9 gradient_vec =
+                    __GEIGEN__::__M9x6_v6_multiply(__GEIGEN__::__Transpose6x9(PFPx), flatten_pk1);
+#endif
+                {
+                    atomicAdd(&(_gradient[v0I].x), gradient_vec.v[0]);
+                    atomicAdd(&(_gradient[v0I].y), gradient_vec.v[1]);
+                    atomicAdd(&(_gradient[v0I].z), gradient_vec.v[2]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                    atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+                    atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+                    atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+                    atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+                }
+            }
+        }
+        else
+        {
+            // PT collision
+#ifdef NEWF
+            double dis;
+            _d_PT(_vertexes[v0I], _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            dis = sqrt(dis);
+            double d_hat_sqrt = sqrt(dHat);
+            __GEIGEN__::Matrix12x9d PFPxT;
+            pFpx_pt2(_vertexes[v0I], _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w],
+                     d_hat_sqrt, PFPxT);
+            
+            double s = dis / d_hat_sqrt;
+            __GEIGEN__::Vector9 tmp;
+            tmp.v[0] = tmp.v[1] = tmp.v[2] = tmp.v[3] = tmp.v[4] = tmp.v[5] =
+                tmp.v[6] = tmp.v[7] = 0;
+            tmp.v[8] = s;
+
+            double coeff = 0.0;
+            if (s < 1.0) {
+                double y = s - 1.0;
+                coeff = -2.0 * Kappa * dHat * y * y / s;
+            }
+
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__s_vec9_multiply(tmp, coeff);
+            __GEIGEN__::Vector12 gradient_vec = __GEIGEN__::__M12x9_v9_multiply(PFPxT, flatten_pk1);
+#else
+            double3 v0 = __GEIGEN__::__minus(_vertexes[MMCVIDI.y], _vertexes[v0I]);
+            double3 v1 = __GEIGEN__::__minus(_vertexes[MMCVIDI.z], _vertexes[v0I]);
+            double3 v2 = __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[v0I]);
+
+            __GEIGEN__::Matrix3x3d Ds;
+            __GEIGEN__::__set_Mat_val_column(Ds, v0, v1, v2);
+
+            double3 normal = __GEIGEN__::__normalized(__GEIGEN__::__v_vec_cross(
+                __GEIGEN__::__minus(_vertexes[MMCVIDI.z], _vertexes[MMCVIDI.y]),
+                __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.y])));
+            double dis = __GEIGEN__::__v_vec_dot(v0, normal);
+
+            if(dis > 0) {
+                normal = make_double3(-normal.x, -normal.y, -normal.z);
+            } else {
+                dis = -dis;
+            }
+
+            double3 pos0 = __GEIGEN__::__add(_vertexes[v0I],
+                __GEIGEN__::__s_vec_multiply(normal, dHat_sqrt - dis));
+
+            double3 u0 = __GEIGEN__::__minus(_vertexes[MMCVIDI.y], pos0);
+            double3 u1 = __GEIGEN__::__minus(_vertexes[MMCVIDI.z], pos0);
+            double3 u2 = __GEIGEN__::__minus(_vertexes[MMCVIDI.w], pos0);
+
+            __GEIGEN__::Matrix3x3d Dm, DmInv;
+            __GEIGEN__::__set_Mat_val_column(Dm, u0, u1, u2);
+            __GEIGEN__::__Inverse(Dm, DmInv);
+
+            __GEIGEN__::Matrix3x3d F;
+            __GEIGEN__::__M_Mat_multiply(Ds, DmInv, F);
+
+            double3 FxN = __GEIGEN__::__M_v_multiply(F, normal);
+            double I5 = __GEIGEN__::__squaredNorm(FxN);
+            double s = sqrt(I5);
+
+            __GEIGEN__::Matrix9x12d PFPx = __computePFDsPX3D_double(DmInv);
+
+            __GEIGEN__::Matrix3x3d fnn;
+            __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(normal, normal);
+            __GEIGEN__::__M_Mat_multiply(F, nn, fnn);
+
+            __GEIGEN__::Vector9 tmp = __GEIGEN__::__Mat3x3_to_vec9_double(fnn);
+
+            double coeff = 0.0;
+            if (s < 1.0) {
+                double y = s - 1.0;
+                coeff = -2.0 * Kappa * dHat * y * y / s;
+            }
+
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__s_vec9_multiply(tmp, coeff);
+            __GEIGEN__::Vector12 gradient_vec =
+                __GEIGEN__::__M12x9_v9_multiply(__GEIGEN__::__Transpose9x12(PFPx), flatten_pk1);
+#endif
+            atomicAdd(&(_gradient[v0I].x), gradient_vec.v[0]);
+            atomicAdd(&(_gradient[v0I].y), gradient_vec.v[1]);
+            atomicAdd(&(_gradient[v0I].z), gradient_vec.v[2]);
+            atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+            atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+            atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+            atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+            atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+            atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+            atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+            atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+            atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+        }
+    }
+}
+
+
+//=============================================================================
+// Friction Gradient Kernel (stub - friction is independent of barrier type)
+// For full implementation, use the kernels from ipc_barrier.cu
+//=============================================================================
+
+__global__ void _calFrictionGradient_cubic(const double3*          _vertexes,
+                                            const double3*          _o_vertexes,
+                                            const int4*             _last_collisionPair,
+                                            double3*                _gradient,
+                                            int                     number,
+                                            double                  dt,
+                                            double2*                distCoord,
+                                            __GEIGEN__::Matrix3x2d* tanBasis,
+                                            double                  eps2,
+                                            double*                 lastH,
+                                            double                  coef)
+{
+    // Friction is independent of barrier function type (log vs cubic)
+    // This kernel should use the same friction implementation as ipc_barrier.cu
+    // For now, this is a placeholder - integrate with existing friction code
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    // TODO: Copy friction gradient implementation from ipc_barrier.cu
+    // Friction does not depend on barrier type, only on contact normal forces
+}
+
+//=============================================================================
+// Friction Hessian Kernel (stub - friction is independent of barrier type)
+//=============================================================================
+
+__global__ void _calFrictionHessian_cubic(const double3*          _vertexes,
+                                           const double3*          _o_vertexes,
+                                           const int4*             _last_collisionPair,
+                                           Eigen::Matrix3d*        triplet_values,
+                                           int*                    row_ids,
+                                           int*                    col_ids,
+                                           uint32_t*               _cpNum,
+                                           int                     number,
+                                           double                  dt,
+                                           double2*                distCoord,
+                                           __GEIGEN__::Matrix3x2d* tanBasis,
+                                           double                  eps2,
+                                           double*                 lastH,
+                                           double                  coef,
+                                           int                     cd_offset4,
+                                           int                     cd_offset3,
+                                           int                     cd_offset2,
+                                           int                     f_offset4,
+                                           int                     f_offset3,
+                                           int                     f_offset2)
+{
+    // Friction is independent of barrier function type (log vs cubic)
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    // TODO: Copy friction hessian implementation from ipc_barrier.cu
+}
+
+//=============================================================================
+// Barrier Hessian Kernel (Cubic Barrier) - Simplified EE/PT case
+//=============================================================================
+
+__global__ void _calBarrierHessian_cubic(const double3*   _vertexes,
+                                          const double3*   _rest_vertexes,
+                                          const int4*      _collisionPair,
+                                          Eigen::Matrix3d* triplet_values,
+                                          int*             row_ids,
+                                          int*             col_ids,
+                                          uint32_t*        _cpNum,
+                                          int*             matIndex,
+                                          double           dHat,
+                                          double           Kappa,
+                                          int              offset4,
+                                          int              offset3,
+                                          int              offset2,
+                                          int              number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    
+    int4   MMCVIDI   = _collisionPair[idx];
+    double dHat_sqrt = sqrt(dHat);
+    
+    if(MMCVIDI.x >= 0)
+    {
+        if(MMCVIDI.w >= 0)
+        {
+            // EE collision - cubic barrier hessian
+#ifdef NEWF
+            double dis;
+            _d_EE(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            dis = sqrt(dis);
+            double d_hat_sqrt = sqrt(dHat);
+            __GEIGEN__::Matrix12x9d PFPxT;
+            pFpx_ee2(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w],
+                     d_hat_sqrt, PFPxT);
+            
+            double s = dis / d_hat_sqrt;
+            
+            __GEIGEN__::Vector9 q0;
+            q0.v[0] = q0.v[1] = q0.v[2] = q0.v[3] = q0.v[4] = q0.v[5] =
+                q0.v[6] = q0.v[7] = 0;
+            q0.v[8] = 1.0;  // normalized direction
+            
+            // Cubic barrier: d^2E/ds^2 = 4 * Kappa * dHat * (1 - s) when s < 1
+            double lambda0 = 0.0;
+            if (s < 1.0) {
+                lambda0 = 4.0 * Kappa * dHat * (1.0 - s);
+            }
+            
+            __GEIGEN__::Matrix9x9d H;
+            H = __GEIGEN__::__S_Mat9x9_multiply(__GEIGEN__::__v9_vec9_toMat9x9(q0, q0), lambda0);
+            
+            __GEIGEN__::Matrix12x12d Hessian;
+            __GEIGEN__::__M12x9_S9x9_MT9x12_Multiply(PFPxT, H, Hessian);
+            
+            int Hidx = matIndex[idx];
+            uint4 global_index = make_uint4(MMCVIDI.x, MMCVIDI.y, MMCVIDI.z, MMCVIDI.w);
+            int triplet_id_offset = Hidx * 16;
+            write_triplet_cubic<12, 12>(triplet_values, row_ids, col_ids, &(global_index.x), Hessian.m, triplet_id_offset);
+#endif
+        }
+        // Other cases (EE parallel, etc.) would follow similar pattern
+    }
+    else
+    {
+        int v0I = -MMCVIDI.x - 1;
+        if(MMCVIDI.z >= 0 && MMCVIDI.w >= 0)
+        {
+            // PT collision - cubic barrier hessian
+#ifdef NEWF
+            double dis;
+            _d_PT(_vertexes[v0I], _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            dis = sqrt(dis);
+            double d_hat_sqrt = sqrt(dHat);
+            __GEIGEN__::Matrix12x9d PFPxT;
+            pFpx_pt2(_vertexes[v0I], _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w],
+                     d_hat_sqrt, PFPxT);
+            
+            double s = dis / d_hat_sqrt;
+            
+            __GEIGEN__::Vector9 q0;
+            q0.v[0] = q0.v[1] = q0.v[2] = q0.v[3] = q0.v[4] = q0.v[5] =
+                q0.v[6] = q0.v[7] = 0;
+            q0.v[8] = 1.0;
+            
+            double lambda0 = 0.0;
+            if (s < 1.0) {
+                lambda0 = 4.0 * Kappa * dHat * (1.0 - s);
+            }
+            
+            __GEIGEN__::Matrix9x9d H;
+            H = __GEIGEN__::__S_Mat9x9_multiply(__GEIGEN__::__v9_vec9_toMat9x9(q0, q0), lambda0);
+            
+            __GEIGEN__::Matrix12x12d Hessian;
+            __GEIGEN__::__M12x9_S9x9_MT9x12_Multiply(PFPxT, H, Hessian);
+            
+            int Hidx = matIndex[idx];
+            uint4 global_index = make_uint4(v0I, MMCVIDI.y, MMCVIDI.z, MMCVIDI.w);
+            int triplet_id_offset = Hidx * M12_Off;
+            write_triplet_cubic<12, 12>(triplet_values, row_ids, col_ids, &(global_index.x), Hessian.m, triplet_id_offset);
+#endif
+        }
+    }
+}
+
+//=============================================================================
+// Combined Barrier Gradient and Hessian Kernel (Cubic Barrier)
+//=============================================================================
+
+__global__ void _calBarrierGradientAndHessian_cubic(const double3*   _vertexes,
+                                                     const double3*   _rest_vertexes,
+                                                     const int4*      _collisionPair,
+                                                     double3*         _gradient,
+                                                     Eigen::Matrix3d* triplet_values,
+                                                     int*             row_ids,
+                                                     int*             col_ids,
+                                                     uint32_t*        _cpNum,
+                                                     int*             matIndex,
+                                                     double           dHat,
+                                                     double           Kappa,
+                                                     int              offset4,
+                                                     int              offset3,
+                                                     int              offset2,
+                                                     int              number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(idx >= number)
+        return;
+    
+    int4   MMCVIDI   = _collisionPair[idx];
+    double dHat_sqrt = sqrt(dHat);
+    
+    constexpr int M12_Off = 16;
+    
+    if(MMCVIDI.x >= 0)
+    {
+        if(MMCVIDI.w >= 0)
+        {
+            // EE collision
+#ifdef NEWF
+            double dis;
+            _d_EE(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            dis = sqrt(dis);
+            double d_hat_sqrt = sqrt(dHat);
+            __GEIGEN__::Matrix12x9d PFPxT;
+            pFpx_ee2(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w],
+                     d_hat_sqrt, PFPxT);
+            
+            double s = dis / d_hat_sqrt;
+            
+            __GEIGEN__::Vector9 tmp;
+            tmp.v[0] = tmp.v[1] = tmp.v[2] = tmp.v[3] = tmp.v[4] = tmp.v[5] =
+                tmp.v[6] = tmp.v[7] = 0;
+            tmp.v[8] = s;
+            
+            // Gradient coefficient
+            double grad_coeff = 0.0;
+            double hess_coeff = 0.0;
+            if (s < 1.0) {
+                double y = s - 1.0;
+                grad_coeff = -2.0 * Kappa * dHat * y * y / s;
+                hess_coeff = 4.0 * Kappa * dHat * (1.0 - s);
+            }
+            
+            // Gradient
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__s_vec9_multiply(tmp, grad_coeff);
+            __GEIGEN__::Vector12 gradient_vec = __GEIGEN__::__M12x9_v9_multiply(PFPxT, flatten_pk1);
+            
+            {
+                atomicAdd(&(_gradient[MMCVIDI.x].x), gradient_vec.v[0]);
+                atomicAdd(&(_gradient[MMCVIDI.x].y), gradient_vec.v[1]);
+                atomicAdd(&(_gradient[MMCVIDI.x].z), gradient_vec.v[2]);
+                atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+                atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+                atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+                atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+                atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+                atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+                atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+            }
+            
+            // Hessian
+            __GEIGEN__::Vector9 q0;
+            q0.v[0] = q0.v[1] = q0.v[2] = q0.v[3] = q0.v[4] = q0.v[5] =
+                q0.v[6] = q0.v[7] = 0;
+            q0.v[8] = 1.0;
+            
+            __GEIGEN__::Matrix9x9d H;
+            H = __GEIGEN__::__S_Mat9x9_multiply(__GEIGEN__::__v9_vec9_toMat9x9(q0, q0), hess_coeff);
+            
+            __GEIGEN__::Matrix12x12d Hessian;
+            __GEIGEN__::__M12x9_S9x9_MT9x12_Multiply(PFPxT, H, Hessian);
+            
+            int Hidx = matIndex[idx];
+            uint4 global_index = make_uint4(MMCVIDI.x, MMCVIDI.y, MMCVIDI.z, MMCVIDI.w);
+            int triplet_id_offset = Hidx * M12_Off;
+            write_triplet_cubic<12, 12>(triplet_values, row_ids, col_ids, &(global_index.x), Hessian.m, triplet_id_offset);
+#endif
+        }
+    }
+    else
+    {
+        int v0I = -MMCVIDI.x - 1;
+        if(MMCVIDI.z >= 0 && MMCVIDI.w >= 0)
+        {
+            // PT collision
+#ifdef NEWF
+            double dis;
+            _d_PT(_vertexes[v0I], _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            dis = sqrt(dis);
+            double d_hat_sqrt = sqrt(dHat);
+            __GEIGEN__::Matrix12x9d PFPxT;
+            pFpx_pt2(_vertexes[v0I], _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w],
+                     d_hat_sqrt, PFPxT);
+            
+            double s = dis / d_hat_sqrt;
+            
+            __GEIGEN__::Vector9 tmp;
+            tmp.v[0] = tmp.v[1] = tmp.v[2] = tmp.v[3] = tmp.v[4] = tmp.v[5] =
+                tmp.v[6] = tmp.v[7] = 0;
+            tmp.v[8] = s;
+            
+            double grad_coeff = 0.0;
+            double hess_coeff = 0.0;
+            if (s < 1.0) {
+                double y = s - 1.0;
+                grad_coeff = -2.0 * Kappa * dHat * y * y / s;
+                hess_coeff = 4.0 * Kappa * dHat * (1.0 - s);
+            }
+            
+            // Gradient
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__s_vec9_multiply(tmp, grad_coeff);
+            __GEIGEN__::Vector12 gradient_vec = __GEIGEN__::__M12x9_v9_multiply(PFPxT, flatten_pk1);
+            
+            atomicAdd(&(_gradient[v0I].x), gradient_vec.v[0]);
+            atomicAdd(&(_gradient[v0I].y), gradient_vec.v[1]);
+            atomicAdd(&(_gradient[v0I].z), gradient_vec.v[2]);
+            atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+            atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+            atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+            atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+            atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+            atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+            atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+            atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+            atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+            
+            // Hessian
+            __GEIGEN__::Vector9 q0;
+            q0.v[0] = q0.v[1] = q0.v[2] = q0.v[3] = q0.v[4] = q0.v[5] =
+                q0.v[6] = q0.v[7] = 0;
+            q0.v[8] = 1.0;
+            
+            __GEIGEN__::Matrix9x9d H;
+            H = __GEIGEN__::__S_Mat9x9_multiply(__GEIGEN__::__v9_vec9_toMat9x9(q0, q0), hess_coeff);
+            
+            __GEIGEN__::Matrix12x12d Hessian;
+            __GEIGEN__::__M12x9_S9x9_MT9x12_Multiply(PFPxT, H, Hessian);
+            
+            int Hidx = matIndex[idx];
+            uint4 global_index = make_uint4(v0I, MMCVIDI.y, MMCVIDI.z, MMCVIDI.w);
+            int triplet_id_offset = Hidx * M12_Off;
+            write_triplet_cubic<12, 12>(triplet_values, row_ids, col_ids, &(global_index.x), Hessian.m, triplet_id_offset);
+#endif
+        }
+    }
+}
