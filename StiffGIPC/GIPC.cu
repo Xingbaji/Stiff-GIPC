@@ -5156,8 +5156,8 @@ float GIPC::computeGradientAndHessian(device_TetraData& TetMesh)
             gipc_global_triplet);
     }
 
-    int fem_global_hessian_index_offset =
-        -abd_fem_count_info.abd_point_num + abd_fem_count_info.abd_body_num * 4;
+    int abd_dofs = abd_fem_count_info.abd_body_num * 4;
+    int fem_global_hessian_index_offset = -abd_fem_count_info.abd_point_num + abd_dofs;
     {
         muda::ParallelFor(256)
             .kernel_name(__FUNCTION__)
@@ -5168,14 +5168,21 @@ float GIPC::computeGradientAndHessian(device_TetraData& TetMesh)
                         gipc_global_triplet.h_fem_fem_contact_start_id),
                     cfem_vals = gipc_global_triplet.block_values(
                         gipc_global_triplet.h_fem_fem_contact_start_id),
+                    BDType = TetMesh.BoundaryType,
                     fem_global_hessian_index_offset] __device__(int i) mutable
                    {
                        int row = cfem_rows[i];
                        int col = cfem_cols[i];
+                       int btypeA = BDType[row];
+                       int btypeB = BDType[col];
                        if(row <= col)
                        {
                            cfem_rows[i] = row + fem_global_hessian_index_offset;
                            cfem_cols[i] = col + fem_global_hessian_index_offset;
+                           if(btypeA != 0 || btypeB != 0)
+                           {
+                               cfem_vals[i].setZero();
+                           }
                        }
                        else
                        {
@@ -5188,7 +5195,7 @@ float GIPC::computeGradientAndHessian(device_TetraData& TetMesh)
 
     {
         gipc::Timer timer{"cal_fem_gradient_hessian"};
-
+        int fem_triplet_start = gipc_global_triplet.global_triplet_offset;
         //CUDA_SAFE_CALL(cudaDeviceSynchronize());
         calculate_fem_gradient_hessian(TetMesh.DmInverses,
                                        TetMesh.vertexes,
@@ -5245,6 +5252,28 @@ float GIPC::computeGradientAndHessian(device_TetraData& TetMesh)
 
         computeSoftConstraintGradientAndHessian(shape_grads, fem_global_hessian_index_offset);
         gipc_global_triplet.global_triplet_offset += softNum;
+
+        int fem_triplet_num = gipc_global_triplet.global_triplet_offset - fem_triplet_start;
+        muda::ParallelFor()
+            .file_line(__FILE__, __LINE__)
+            .apply(fem_triplet_num,
+                   [  
+                       cfem_rows = gipc_global_triplet.block_row_indices(fem_triplet_start),
+                       cfem_cols = gipc_global_triplet.block_col_indices(fem_triplet_start),
+                       triplet_fem = gipc_global_triplet.block_values(fem_triplet_start),
+                       BDType = TetMesh.BoundaryType,
+                       hess_index2fem_index = fem_global_hessian_index_offset] __device__(int i) mutable
+                   {
+                       int row    = cfem_rows[i];
+                       int col    = cfem_cols[i];
+                       int btypeA = BDType[row - hess_index2fem_index];
+                       int btypeB = BDType[col - hess_index2fem_index];
+                       if(btypeA != 0 || btypeB != 0)
+                       {
+                           triplet_fem[i].setZero();
+                       }
+                   });
+
 
         //int massNum =
         muda::ParallelFor()
