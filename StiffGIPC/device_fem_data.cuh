@@ -47,6 +47,7 @@ class device_TetraData
     int*                    BoundaryType     = nullptr;
 
     double3*          shape_grads              = nullptr;
+    double3*          all_gradient             = nullptr;
     BodyBoundaryType* body_id_to_boundary_type = nullptr;
     int*              point_id_to_body_id      = nullptr;
     int*              tet_id_to_body_id        = nullptr;

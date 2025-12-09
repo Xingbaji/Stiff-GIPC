@@ -95,4 +95,58 @@ target_compile_options(gipc
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${GIPC_SOURCE} ${GIPC_HANDER})
 
+# PNCG variant target
+add_executable(gipc_pncg)
+target_compile_features(gipc_pncg PRIVATE cuda_std_17)
+target_include_directories(gipc_pncg PRIVATE "StiffGIPC/")
+target_include_directories(gipc_pncg PRIVATE "StiffGIPC/muda/src/")
+target_sources(gipc_pncg PRIVATE ${GIPC_SOURCE} ${GIPC_HANDER})
+
+# add assets and output directory, that we can easily access them in the code
+target_compile_definitions(gipc_pncg PRIVATE GIPC_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Assets/")
+target_compile_definitions(gipc_pncg PRIVATE GIPC_OUTPUT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Output/")
+
+# Note: Fork does NOT use USE_SNK1, ADAPTIVE_KAPPA, USE_FRICTION
+# Commenting them out to match fork behavior
+target_compile_definitions(gipc_pncg PRIVATE USE_PNCG)
+# target_compile_definitions(gipc_pncg PRIVATE USE_SNK1 ADAPTIVE_KAPPA USE_FRICTION USE_PNCG)
+
+target_include_directories(gipc_pncg PUBLIC ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+
+if(CUDAToolkit_VERSION_MAJOR GREATER_EQUAL 13)
+    target_include_directories(gipc_pncg PRIVATE ${CUDAToolkit_INCLUDE_DIRS}/cccl)
+endif()
+
+target_link_libraries(gipc_pncg PRIVATE cusparse cublas cusolver cudart_static)
+target_link_libraries(gipc_pncg PRIVATE metis_partition CUDA::cudart)
+target_link_libraries(gipc_pncg PRIVATE GLUT::GLUT GLEW::GLEW OpenGL::GLU Eigen3::Eigen TBB::tbb)
+target_link_libraries(gipc_pncg PRIVATE nlohmann_json::nlohmann_json)
+
+target_compile_features(gipc_pncg PRIVATE cxx_std_17)
+
+set_target_properties(gipc_pncg PROPERTIES
+    CUDA_EXTENSIONS ON
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    CUDA_STANDARD 17
+    CUDA_ARCHITECTURES 89)
+
+target_compile_options(gipc_pncg
+    PRIVATE $<$<COMPILE_LANGUAGE:CUDA>: 
+        ${CMAKE_CUDA_FLAGS} 
+        --use_fast_math 
+        -lineinfo 
+        --ptxas-options=-allow-expensive-optimizations=true 
+        -Xcudafe 
+        "--display_error_number --diag_suppress=implicit_return_from_non_void_function --diag_suppress=2642"
+    >
+    PUBLIC $<$<COMPILE_LANGUAGE:CUDA>: 
+        --extended-lambda 
+        --expt-relaxed-constexpr 
+        --default-stream=per-thread
+    >
+)
+
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${GIPC_SOURCE} ${GIPC_HANDER})
+
 add_subdirectory("MeshProcess")

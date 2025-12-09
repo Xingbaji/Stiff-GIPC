@@ -27,6 +27,7 @@ void device_TetraData::Malloc_DEVICE_MEM(const int& vertex_num,
     CUDA_SAFE_CALL(cudaMalloc((void**)&fb, vertex_num * sizeof(double3)));
     CUDA_SAFE_CALL(cudaMalloc((void**)&totalForce, vertex_num * sizeof(double3)));
     CUDA_SAFE_CALL(cudaMalloc((void**)&shape_grads, vertex_num * sizeof(double3)));
+    CUDA_SAFE_CALL(cudaMalloc((void**)&all_gradient, vertex_num * sizeof(double3)));
 
     CUDA_SAFE_CALL(cudaMalloc((void**)&tetrahedras, tetradedra_num * sizeof(uint4)));
     CUDA_SAFE_CALL(cudaMalloc((void**)&tempTetrahedras, tetradedra_num * sizeof(uint4)));
@@ -79,6 +80,7 @@ void device_TetraData::FREE_DEVICE_MEM()
     CUDA_SAFE_CALL(cudaFree(xTilta));
     CUDA_SAFE_CALL(cudaFree(fb));
     CUDA_SAFE_CALL(cudaFree(shape_grads));
+    CUDA_SAFE_CALL(cudaFree(all_gradient));
     CUDA_SAFE_CALL(cudaFree(tetrahedras));
     CUDA_SAFE_CALL(cudaFree(tempTetrahedras));
     CUDA_SAFE_CALL(cudaFree(volum));

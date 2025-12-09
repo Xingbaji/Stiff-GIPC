@@ -879,6 +879,44 @@ void set_case3()
     importer.import_scene(tetMesh);
 }
 
+// Case 4: Two stiff FEM bunnies collision (from Stiff-GIPC-fork)
+// This is a high-stiffness scene designed for PNCG testing
+void set_case4()
+{
+    gipc::SimpleSceneImporter importer;
+    double                    scale           = 0.5;
+    double3                   position_offset = make_double3(0, 0.5, 0);
+    Eigen::Matrix4d           transform       = Eigen::Matrix4d::Identity();
+    transform.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() * scale;
+    transform.block<3, 1>(0, 3) =
+        -Eigen::Vector3d(position_offset.x, position_offset.y, position_offset.z);
+
+    double Youngth_Modulus = 8.5e5;  // High stiffness
+    string mesh0_path      = assets_dir + "tetMesh/bunny2.msh";
+    importer.load_geometry(tetMesh,
+                           3,
+                           gipc::BodyType::FEM,
+                           transform,
+                           Youngth_Modulus,
+                           mesh0_path,
+                           ipc.pcg_data.P_type);
+
+    position_offset             = make_double3(-0.25, -1.2, -0.1);
+    transform                   = Eigen::Matrix4d::Identity();
+    transform.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() * scale;
+    transform.block<3, 1>(0, 3) =
+        -Eigen::Vector3d(position_offset.x, position_offset.y, position_offset.z);
+
+    string mesh1_path = mesh0_path;
+    importer.load_geometry(tetMesh,
+                           3,
+                           gipc::BodyType::FEM,
+                           transform,
+                           Youngth_Modulus,
+                           mesh1_path,
+                           ipc.pcg_data.P_type);
+}
+
 
 void setMAS_partition()
 {
@@ -926,8 +964,11 @@ void initScene()
         case 1:  // soft-rigid-cloth coupling
             set_case2();
             break;
-        case 2:  //wrecking ball case
+        case 2:  // wrecking ball case
             set_case3();
+            break;
+        case 3:  // two stiff FEM bunnies (PNCG test scene)
+            set_case4();
             break;
     }
 

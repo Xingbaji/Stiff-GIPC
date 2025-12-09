@@ -61,6 +61,11 @@ class GlobalLinearSystem
      * - distribute the solution to the subsystems
      */
     gipc::SizeT solve_linear_system();
+    
+    /**
+     * \brief Reset the solver state (e.g., call at the start of each frame for PNCG)
+     */
+    void reset_solver() { if(m_solver) m_solver->reset(); }
 
     Json               as_json() const;
     GIPCTripletMatrix* gipc_global_triplet = nullptr;

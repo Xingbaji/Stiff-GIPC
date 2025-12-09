@@ -15,6 +15,7 @@ class FEMLinearSubsystem : public DiagonalSubsystem
 
     muda::BufferView<double3> barrier_gradient() const;
     muda::BufferView<double3> shape_gradient() const;
+    muda::BufferView<double3> all_gradient() const;
     muda::BufferView<double3> dx() const;
     muda::BufferView<double>  mass() const;
 

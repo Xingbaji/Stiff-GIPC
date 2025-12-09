@@ -19,6 +19,12 @@ class IterativeSolver
     IterativeSolver(const IterativeSolver&)            = delete;
     IterativeSolver& operator=(const IterativeSolver&) = delete;
 
+  public:
+    /**
+     * \brief Reset solver state (e.g., for PNCG at the start of each frame)
+     */
+    virtual void reset() {}
+    
   protected:
     /**
      * \brief Subclass of ILinearSystemSolver must implement this method to solve the linear system Ax = b, directly or iteratively.

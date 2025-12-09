@@ -32,6 +32,14 @@ muda::BufferView<double3> FEMLinearSubsystem::shape_gradient() const
         offset, fem_count);
 }
 
+muda::BufferView<double3> FEMLinearSubsystem::all_gradient() const
+{
+    auto offset    = m_gipc.abd_fem_count_info.fem_point_offset;
+    auto fem_count = m_gipc.abd_fem_count_info.fem_point_num;
+    return muda::BufferView<double3>{m_tetra_data.all_gradient, m_gipc.vertexNum}.subview(
+        offset, fem_count);
+}
+
 muda::BufferView<double3> FEMLinearSubsystem::dx() const
 {
     auto offset    = m_gipc.abd_fem_count_info.fem_point_offset;
@@ -62,23 +70,27 @@ void FEMLinearSubsystem::assemble(DenseVectorView gradient)
 
     auto barrier_gradient = this->barrier_gradient();
     auto shape_gradient   = this->shape_gradient();
+    auto all_gradient     = this->all_gradient();
 
     ParallelFor()
         .file_line(__FILE__, __LINE__)
         .apply(barrier_gradient.size(),
                [b     = barrier_gradient.viewer().name("barrier_gradient"),
                 s     = shape_gradient.viewer().name("shape_gradient"),
+                ag    = all_gradient.viewer().name("all_gradient"),
                 btype = boundary_type().cviewer().name("boundary_type"),
                 gradient = gradient.viewer().name("gradient")] __device__(int i) mutable
                {
                    if(btype(i) != 0)
                    {
                        gradient.segment<3>(i * 3).as_eigen() = Vector3::Zero();
+                       eigen::as_eigen(ag(i))                = Vector3::Zero();
                    }
                    else
                    {
-                       gradient.segment<3>(i * 3).as_eigen() =
-                           eigen::as_eigen(b(i)) + eigen::as_eigen(s(i));
+                       auto val = eigen::as_eigen(b(i)) + eigen::as_eigen(s(i));
+                       gradient.segment<3>(i * 3).as_eigen() = val;
+                       eigen::as_eigen(ag(i))                = val;
                    }
                });
 }

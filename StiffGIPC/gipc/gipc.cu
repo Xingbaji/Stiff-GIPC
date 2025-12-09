@@ -4,6 +4,10 @@
 #include <gipc/utils/json.h>
 #include <fstream>
 
+#ifdef USE_PNCG
+#include <linear_system/solver/pncg_solver.h>
+#endif
+
 void GIPC::build_gipc_system(device_TetraData& tet)
 {
     std::cout << "* Building GIPC system:" << std::endl;
@@ -48,10 +52,17 @@ void GIPC::create_LinearSystem(device_TetraData& tet)
     auto& fem = m_global_linear_system->create<gipc::FEMLinearSubsystem>(*this, tet);
 
 
+#ifdef USE_PNCG
+    std::cout << "- create PNCG Solver" << std::endl;
+    gipc::PNCGSolverConfig cfg;
+    cfg.global_tol_rate = pcg_threshold;
+    auto& pcg           = m_global_linear_system->create<gipc::PNCGSolver>(cfg);
+#else
     std::cout << "- create PCG Solver" << std::endl;
     gipc::PCGSolverConfig cfg;
     cfg.global_tol_rate = pcg_threshold;
     auto& pcg           = m_global_linear_system->create<gipc::PCGSolver>(cfg);
+#endif
 
     std::cout << "- create Preconditioner" << std::endl;
     
