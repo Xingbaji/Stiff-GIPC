@@ -72,6 +72,11 @@ __host__ __device__ inline void check(T                 result,
 #else
     if(result)
     {
+        // Ignore cudaErrorCudartUnloading (error 4) which occurs during cleanup
+        // when CUDA driver is shutting down. This is benign and should not abort.
+        if(static_cast<unsigned int>(result) == 4)  // cudaErrorCudartUnloading
+            return;
+            
         std::fprintf(stderr,
                      "CUDA error at %s:%d code=%d(%s) \"%s\" \n",
                      file,

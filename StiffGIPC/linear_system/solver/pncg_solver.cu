@@ -125,113 +125,90 @@ SizeT PNCGSolver::solve(muda::DenseVectorView<Float> x, muda::CDenseVectorView<F
     p.resize(b.size());
     r.resize(b.size());
     Ap.resize(b.size());
-    // Match fork behavior: always call pncg with iter=0
+    
+    // Single-step PNCG (preconditioned steepest descent)
+    // This is called once per Newton iteration; the outer loop handles the iteration
     auto iter = pncg(x, b, m_config.max_iter_ratio * b.size(), 0);
 
     return iter;
 }
 
-// PNCG implementation - matches Stiff-GIPC-fork behavior
-// Note: Fork always uses iter=0, so this is effectively one-step preconditioned steepest descent
-SizeT PNCGSolver::pncg(muda::DenseVectorView<Float> x, muda::CDenseVectorView<Float> b, SizeT max_iter, int iter)
+// PNCG implementation - Single-step Preconditioned Steepest Descent
+// This solver computes ONE search direction per call.
+// The outer Newton iteration handles the full optimization loop.
+//
+// Solves: find x such that x ≈ -H^{-1} * g
+// where b = g (gradient) and A = H (Hessian)
+SizeT PNCGSolver::pncg(muda::DenseVectorView<Float> x, muda::CDenseVectorView<Float> b, SizeT max_iter, int /* unused */)
 {
+    // Resize working vectors
     p_k.resize(b.size());
     p_k_1.resize(b.size());
     g_k.resize(b.size());
     g_k_1.resize(b.size());
-    y.resize(b.size());
-    Py.resize(b.size());
     P_g_k_1.resize(b.size());
     P_g_k.resize(b.size());
     ss.resize(b.size());
-    prev_vertices.resize(b.size());
 
-    // Copy gradient to g_k_1
+    // Copy gradient to g_k_1: g = b
     g_k_1.buffer_view().copy_from(b.buffer_view());
 
-    double alpha = 1;
-    bool restart = true;
+    // Apply preconditioner: P_g = P * g
+    apply_preconditioner(P_g_k_1, g_k_1);
+
+    // Compute search direction: p = -P * g (steepest descent direction)
+    Z_Scale_Multiply(p_k_1.buffer_view().data(),
+                     P_g_k_1.buffer_view().data(),
+                     -1.0,
+                     p_k_1.size());
+
+    // Copy to p for spmv
+    p = p_k_1;
     
-    while(1) {
-        if(iter == 0 || restart) {
-            // m_global_preconditioner->do_assemble()
-        }
-        
-        // P_g_k_1 = P * g_{k+1}
-        apply_preconditioner(P_g_k_1, g_k_1);
+    // Compute Ap = A * p (Hessian times search direction)
+    spmv(p.cview(), Ap.view());
 
-        if(iter == 0) {
-            // p_{k+1} = -P * g_{k+1}
-            Z_Scale_Multiply(p_k_1.buffer_view().data(),
-                             P_g_k_1.buffer_view().data(),
-                             -1.0,
-                             p_k_1.size());
-        }
-        else {
-            // FR (Fletcher-Reeves)
-            // beta = (g_{k+1}^T * P * g_{k+1}) / (g_{k}^T * P * g_{k})
-            double numerator = My_PCG_General_v_v_Reduction_Algorithm(
-                ss.buffer_view().data(),
-                g_k_1.buffer_view().data(),
-                P_g_k_1.buffer_view().data(),
-                g_k_1.size());
-            double denominator = My_PCG_General_v_v_Reduction_Algorithm(
-                ss.buffer_view().data(),
-                g_k.buffer_view().data(),
-                P_g_k.buffer_view().data(),
-                g_k.size());
-            double beta = numerator / denominator;
+    // Compute gTp = g^T * p
+    double aa = My_PCG_General_v_v_Reduction_Algorithm(
+        ss.buffer_view().data(),
+        g_k_1.buffer_view().data(),
+        p_k_1.buffer_view().data(),
+        g_k_1.size());
 
-            // p_{k+1} = -P * g_{k+1} + beta * p_{k}
-            Z_Scale_Multiply_Inplace(p_k.buffer_view().data(), beta, p_k.size());
-            Z_Add_Scale_Mul_Vec_Inplace(p_k_1.buffer_view().data(),
-                                        P_g_k_1.buffer_view().data(),
-                                        -1.0,
-                                        p_k_1.size());
-        }
+    // Compute pHp = p^T * A * p (curvature along search direction)
+    double bb = My_PCG_General_v_v_Reduction_Algorithm(
+        ss.buffer_view().data(),
+        p_k_1.buffer_view().data(),
+        Ap.buffer_view().data(),
+        p_k_1.size());
 
-        p = p_k_1;
-        // Ap = A * p_{k+1}
-        spmv(p.cview(), Ap.view());
+    // Compute optimal step size: alpha = -g^T*p / p^T*A*p
+    // Since p = -P*g, we have g^T*p = -g^T*P*g < 0 (assuming P is SPD)
+    // So alpha = -(-g^T*P*g) / (p^T*A*p) = g^T*P*g / p^T*A*p > 0
+    double alpha = -aa / bb;
 
-        double aa = My_PCG_General_v_v_Reduction_Algorithm(
-            ss.buffer_view().data(),
-            g_k_1.buffer_view().data(),
-            p_k_1.buffer_view().data(),
-            g_k_1.size());
-        double bb = My_PCG_General_v_v_Reduction_Algorithm(
-            ss.buffer_view().data(),
-            p_k_1.buffer_view().data(),
-            Ap.buffer_view().data(),
-            p_k_1.size());
-        double g_alpha = -aa / bb;
-        alpha = g_alpha;
+    // Save values for external access (e.g., line search)
+    gTp = aa;
+    pHp = bb;
 
-        if (alpha < 0) {
-            restart = true;
-            std::cout << "alpha < 0: " << alpha << std::endl;
-            alpha = 0;
-        } else {
-            gTp = aa;
-            pHp = bb;
-            break;
-        }
-        break;
+    // Handle negative curvature
+    if(alpha < 0)
+    {
+        // Negative curvature indicates indefinite Hessian in this direction
+        // Use a small positive step or zero
+        alpha = 0;
     }
 
-    // Copy the final moving direction to x
+    // Compute the search direction: x = alpha * p
+    // Note: The original code had x = -alpha * p, but since p = -P*g,
+    // we want x = alpha * p = -alpha * P * g (descent direction scaled by alpha)
     Z_Scale_Multiply(x.buffer_view().data(),
                      p_k_1.buffer_view().data(),
-                     -alpha,
+                     alpha,
                      p_k_1.size());
-    
-    // Copy g_{k+1} to g_{k}
-    g_k.buffer_view().copy_from(g_k_1.buffer_view());
-    // Copy p_{k+1} to p_{k}
-    p_k.buffer_view().copy_from(p_k_1.buffer_view());
 
-    return iter;
+    // Return 1 to indicate one step was taken
+    return 1;
 }
 
 }  // namespace gipc
-

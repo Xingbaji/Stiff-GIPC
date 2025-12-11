@@ -98,6 +98,53 @@ __global__ void _checkGroundIntersection(const double3*  vertexes,
                                          int             number);
 
 //=============================================================================
+// Adaptive Stiffness Ground Collision Kernels (ppf-contact-solver style)
+//
+// These kernels compute barrier forces with per-contact adaptive stiffness
+// based on local Hessian and mass regularization:
+//   stiff_k = (normal^T * local_hess * normal) + (mass / gap²)
+//=============================================================================
+
+/**
+ * @brief Compute ground gradient and hessian with adaptive stiffness
+ * 
+ * This version computes per-contact stiffness based on local material properties
+ * and mass regularization, following the approach from ppf-contact-solver.
+ */
+__global__ void _computeGroundGradientAndHessianAdaptive(
+    const double3*   vertexes,
+    const double*    g_offset,
+    const double3*   g_normal,
+    const uint32_t*  _environment_collisionPair,
+    double3*         gradient,
+    uint32_t*        _gpNum,
+    Eigen::Matrix3d* triplet_values,
+    int*             row_ids,
+    int*             col_ids,
+    const double*    masses,        // Per-vertex mass
+    const double3*   hess_diag,     // Per-vertex diagonal Hessian (inertia + elasticity)
+    double           dHat,
+    double           dt,            // Timestep for inertia-based fallback
+    int              global_offset,
+    int              number);
+
+/**
+ * @brief Compute ground gradient with adaptive stiffness
+ */
+__global__ void _computeGroundGradientAdaptive(
+    const double3*   vertexes,
+    const double*    g_offset,
+    const double3*   g_normal,
+    const uint32_t*  _environment_collisionPair,
+    double3*         gradient,
+    uint32_t*        _gpNum,
+    const double*    masses,
+    const double3*   hess_diag,
+    double           dHat,
+    double           dt,
+    int              number);
+
+//=============================================================================
 // Barrier Gradient/Hessian Kernels
 // Declarations moved to barrier_gradient_hessian.cuh (include separately)
 //=============================================================================

@@ -16,6 +16,7 @@
 
 #include "ipc_collision.cuh"
 #include "barrier_gradient_hessian.cuh"  // Barrier gradient/hessian kernel declarations
+#include "barrier_functions.cuh"         // Cubic/log barrier function definitions
 #include "ipc_common.cuh"  // Common helper functions (makePDGeneral_ipc, write_triplet)
 #include "GIPC.cuh"
 #include "mlbvh.cuh"  // Contains _d_EE, _d_PP, _d_PE, _d_PT, _compute_epx functions
@@ -25,6 +26,9 @@
 #include <cmath>
 
 using namespace Eigen;
+
+// Barrier type selection - MUST match GIPC.cu and barrier_gradient_hessian.cu
+#define USE_CUBIC_BARRIER false
 
 
 //=============================================================================
@@ -257,8 +261,21 @@ __global__ void _computeGroundGradientAndHessian(const double3*  vertexes,
     double3      normal = *g_normal;
     unsigned int gidx   = _environment_collisionPair[idx];
     double dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    
+#if USE_CUBIC_BARRIER
+    // Cubic barrier for ground collision
+    // dist is signed distance to ground (positive above ground)
+    double dHat_sqrt = sqrt(dHat);
+    
+    // Gradient: dE/dx = dE/dg * dg/dx = grad * normal
+    double grad_val = barrier::cubic_gradient(dist, dHat_sqrt);
+    double3 grad = __GEIGEN__::__s_vec_multiply(normal, Kappa * grad_val);
+    
+    // Hessian: d²E/dx² = curv * (normal ⊗ normal)
+    double curv = barrier::cubic_curvature(dist, dHat_sqrt);
+#else
+    // Log barrier (original formulation)
     double dist2 = dist * dist;
-
     double t   = dist2 - dHat;
     double g_b = t * log(dist2 / dHat) * -2.0 - (t * t) / dist2;
 
@@ -266,6 +283,8 @@ __global__ void _computeGroundGradientAndHessian(const double3*  vertexes,
                  + 1.0 / (dist2 * dist2) * (t * t);
 
     double3 grad = __GEIGEN__::__s_vec_multiply(normal, Kappa * g_b * 2 * dist);
+    double curv = 4.0 * H_b * dist2 + 2.0 * g_b;
+#endif
 
     {
         atomicAdd(&(gradient[gidx].x), grad.x);
@@ -273,10 +292,9 @@ __global__ void _computeGroundGradientAndHessian(const double3*  vertexes,
         atomicAdd(&(gradient[gidx].z), grad.z);
     }
 
-    double param = 4.0 * H_b * dist2 + 2.0 * g_b;
     {
         __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(normal, normal);
-        __GEIGEN__::Matrix3x3d Hpg = __GEIGEN__::__S_Mat_multiply(nn, Kappa * param);
+        __GEIGEN__::Matrix3x3d Hpg = __GEIGEN__::__S_Mat_multiply(nn, Kappa * curv);
 
         int pidx = atomicAdd(_gpNum, 1);
         write_triplet<3, 3>(triplet_values, row_ids, col_ids, &gidx, Hpg.m, global_offset + idx);
@@ -299,12 +317,19 @@ __global__ void _computeGroundGradient(const double3*  vertexes,
     double3 normal = *g_normal;
     int     gidx   = _environment_collisionPair[idx];
     double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
-    double  dist2 = dist * dist;
 
+#if USE_CUBIC_BARRIER
+    // Cubic barrier gradient for ground collision
+    double dHat_sqrt = sqrt(dHat);
+    double grad_val = barrier::cubic_gradient(dist, dHat_sqrt);
+    double3 grad = __GEIGEN__::__s_vec_multiply(normal, Kappa * grad_val);
+#else
+    // Log barrier (original formulation)
+    double  dist2 = dist * dist;
     double t   = dist2 - dHat;
     double g_b = t * std::log(dist2 / dHat) * -2.0 - (t * t) / dist2;
-
     double3 grad = __GEIGEN__::__s_vec_multiply(normal, Kappa * g_b * 2 * dist);
+#endif
 
     {
         atomicAdd(&(gradient[gidx].x), grad.x);
@@ -438,6 +463,140 @@ __global__ void _checkGroundIntersection(const double3*  vertexes,
     double  dist = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
     if(dist < 0)
         *_isIntersect = -1;
+}
+
+//=============================================================================
+// Adaptive Stiffness Ground Collision Kernels
+// Based on ppf-contact-solver approach:
+//   stiff_k = (normal^T * local_hess * normal) + (mass / gap²)
+//=============================================================================
+
+__global__ void _computeGroundGradientAndHessianAdaptive(
+    const double3*   vertexes,
+    const double*    g_offset,
+    const double3*   g_normal,
+    const uint32_t*  _environment_collisionPair,
+    double3*         gradient,
+    uint32_t*        _gpNum,
+    Eigen::Matrix3d* triplet_values,
+    int*             row_ids,
+    int*             col_ids,
+    const double*    masses,
+    const double3*   hess_diag,
+    double           dHat,
+    double           dt,
+    int              global_offset,
+    int              number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= number)
+        return;
+    
+    double3      normal = *g_normal;
+    unsigned int gidx   = _environment_collisionPair[idx];
+    double       dist   = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    
+    // Compute adaptive stiffness using ppf-contact-solver approach
+    // gap is the distance to ground (positive above ground)
+    double gap = dist;
+    double stiff_k;
+    
+    if (hess_diag != nullptr && gap > 0.0) {
+        // Full stiffness computation: normal^T * H * normal + mass/gap²
+        stiff_k = barrier::compute_stiffness_ground(normal, masses[gidx], gap, hess_diag[gidx]);
+    } else {
+        // Fallback to simple mass-based stiffness
+        gap = fmax(gap, 1e-10);  // Clamp for safety
+        stiff_k = barrier::compute_stiffness_ground_simple(masses[gidx], dt, gap);
+    }
+    
+#if USE_CUBIC_BARRIER
+    // Cubic barrier for ground collision
+    double dHat_sqrt = sqrt(dHat);
+    
+    // Gradient: dE/dx = stiff_k * dE/dg * dg/dx = stiff_k * grad * normal
+    double grad_val = barrier::cubic_gradient(dist, dHat_sqrt);
+    double3 grad = __GEIGEN__::__s_vec_multiply(normal, stiff_k * grad_val);
+    
+    // Hessian: d²E/dx² = stiff_k * curv * (normal ⊗ normal)
+    double curv = barrier::cubic_curvature(dist, dHat_sqrt);
+#else
+    // Log barrier (original formulation)
+    double dist2 = dist * dist;
+    double t   = dist2 - dHat;
+    double g_b = t * log(dist2 / dHat) * -2.0 - (t * t) / dist2;
+    double H_b = (log(dist2 / dHat) * -2.0 - t * 4.0 / dist2)
+                 + 1.0 / (dist2 * dist2) * (t * t);
+    
+    double3 grad = __GEIGEN__::__s_vec_multiply(normal, stiff_k * g_b * 2 * dist);
+    double curv = 4.0 * H_b * dist2 + 2.0 * g_b;
+#endif
+
+    {
+        atomicAdd(&(gradient[gidx].x), grad.x);
+        atomicAdd(&(gradient[gidx].y), grad.y);
+        atomicAdd(&(gradient[gidx].z), grad.z);
+    }
+
+    {
+        __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(normal, normal);
+        __GEIGEN__::Matrix3x3d Hpg = __GEIGEN__::__S_Mat_multiply(nn, stiff_k * curv);
+
+        int pidx = atomicAdd(_gpNum, 1);
+        write_triplet<3, 3>(triplet_values, row_ids, col_ids, &gidx, Hpg.m, global_offset + idx);
+    }
+}
+
+__global__ void _computeGroundGradientAdaptive(
+    const double3*   vertexes,
+    const double*    g_offset,
+    const double3*   g_normal,
+    const uint32_t*  _environment_collisionPair,
+    double3*         gradient,
+    uint32_t*        _gpNum,
+    const double*    masses,
+    const double3*   hess_diag,
+    double           dHat,
+    double           dt,
+    int              number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= number)
+        return;
+    
+    double3 normal = *g_normal;
+    int     gidx   = _environment_collisionPair[idx];
+    double  dist   = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    
+    // Compute adaptive stiffness
+    double gap = dist;
+    double stiff_k;
+    
+    if (hess_diag != nullptr && gap > 0.0) {
+        stiff_k = barrier::compute_stiffness_ground(normal, masses[gidx], gap, hess_diag[gidx]);
+    } else {
+        gap = fmax(gap, 1e-10);
+        stiff_k = barrier::compute_stiffness_ground_simple(masses[gidx], dt, gap);
+    }
+
+#if USE_CUBIC_BARRIER
+    // Cubic barrier gradient for ground collision
+    double dHat_sqrt = sqrt(dHat);
+    double grad_val = barrier::cubic_gradient(dist, dHat_sqrt);
+    double3 grad = __GEIGEN__::__s_vec_multiply(normal, stiff_k * grad_val);
+#else
+    // Log barrier (original formulation)
+    double dist2 = dist * dist;
+    double t   = dist2 - dHat;
+    double g_b = t * std::log(dist2 / dHat) * -2.0 - (t * t) / dist2;
+    double3 grad = __GEIGEN__::__s_vec_multiply(normal, stiff_k * g_b * 2 * dist);
+#endif
+
+    {
+        atomicAdd(&(gradient[gidx].x), grad.x);
+        atomicAdd(&(gradient[gidx].y), grad.y);
+        atomicAdd(&(gradient[gidx].z), grad.z);
+    }
 }
 
 //=============================================================================

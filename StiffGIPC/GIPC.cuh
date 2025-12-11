@@ -173,10 +173,12 @@ class GIPC
     int calculateMovingDirection(device_TetraData& TetMesh, int cpNum, int preconditioner_type = 0);
     float computeGradientAndHessian(device_TetraData& TetMesh);
     void  computeGroundGradientAndHessian(double3* _gradient);
+    void  computeGroundGradientAndHessianAdaptive(double3* _gradient, const double* masses, double dt);
 
     void partitionContactHessian();
 
     void  computeGroundGradient(double3* _gradient, double mKap);
+    void  computeGroundGradientAdaptive(double3* _gradient, const double* masses, double dt);
     void computeSoftConstraintGradientAndHessian(double3* _gradient,
                                                  int global_hessian_fem_offset);
 

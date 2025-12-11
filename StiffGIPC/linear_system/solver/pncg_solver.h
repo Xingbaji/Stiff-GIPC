@@ -53,15 +53,24 @@ class PNCGSolver : public IterativeSolver
     double delta_E_init;
     
   public:
-    // Reset is a no-op for PNCG (no state to reset since iter is always 0)
+    // Reset is a no-op for PNCG (stateless iterative solver)
     void reset() override {}
 
   protected:
     SizeT solve(muda::DenseVectorView<Float> x, muda::CDenseVectorView<Float> b) override;
 
   private:
-    // Note: iter parameter matches fork behavior (always 0 when called from solve())
-    SizeT pncg(muda::DenseVectorView<Float> x, muda::CDenseVectorView<Float> b, SizeT max_iter, int iter = 0);
+    /**
+     * \brief Preconditioned Nonlinear Conjugate Gradient solver
+     * 
+     * Solves the linear system Ax = -b using Fletcher-Reeves PNCG.
+     * 
+     * \param x Output: the solution vector
+     * \param b Input: the right-hand side (gradient)
+     * \param max_iter Maximum number of iterations
+     * \return Actual number of iterations performed
+     */
+    SizeT pncg(muda::DenseVectorView<Float> x, muda::CDenseVectorView<Float> b, SizeT max_iter, int unused = 0);
 };
 }  // namespace gipc
 

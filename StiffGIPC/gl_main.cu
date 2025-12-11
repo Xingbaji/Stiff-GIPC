@@ -559,7 +559,7 @@ void initFEM(tetrahedra_obj& mesh)
     double massSum   = 0;
     double volumeSum = 0;
     float  angleX = FEM::PI / 4, angleY = -FEM::PI / 4, angleZ = FEM::PI / 2;
-    __GEIGEN__::Matrix3x3d rotation, rotationZ, rotationY, rotationX, eigenTest;
+    __GEIGEN__::Matrix3x3d rotation, rotationZ, rotationY, rotationX;
     __GEIGEN__::__set_Mat_val(rotation, 1, 0, 0, 0, 1, 0, 0, 0, 1);
     __GEIGEN__::__set_Mat_val(
         rotationZ, cos(angleZ), -sin(angleZ), 0, sin(angleZ), cos(angleZ), 0, 0, 0, 1);
@@ -671,7 +671,6 @@ void LoadSettings()
     infile.open(DEFAULT_CONFIG_FILE, std::ifstream::in);
     if(successfulRead = infile.is_open())
     {
-        int  tempEnum;
         char ignoreToken[256];
 
         // global settings:
@@ -852,6 +851,7 @@ void set_case3()
                                        gipc::BodyType::ABD};
     importer.import_scene(tetMesh);
 }
+
 
 void set_case4()
 {

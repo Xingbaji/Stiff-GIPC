@@ -37,6 +37,14 @@ inline void cuda_safe_call_(cudaError err, const char* file_name, const int num_
 {
     if(cudaSuccess != err)
     {
+        // cudaErrorCudartUnloading (error 4) occurs during cleanup when CUDA driver
+        // is shutting down. This is benign and should not cause abort.
+        if (err == cudaErrorCudartUnloading)
+        {
+            // Silently ignore driver shutdown errors during cleanup
+            return;
+        }
+        
         std::cerr << file_name << "[" << num_line << "]: "
                   << "CUDA Running API error[" << (int)err
                   << "]: " << cudaGetErrorString(err) << std::endl;

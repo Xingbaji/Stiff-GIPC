@@ -1600,3 +1600,688 @@ __global__ void _calBarrierGradient(const double3*    _vertexes,
         }
     }
 }
+
+
+//=============================================================================
+// Adaptive Stiffness Barrier Kernels Implementation
+//=============================================================================
+
+__global__ void _computeInertiaHessDiag(
+    const double* _masses,
+    double3*      _hess_diag,
+    double        dt,
+    int           number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= number) return;
+    
+    // Inertia contribution: mass / dt²
+    double mass = _masses[idx];
+    double dt_sq = dt * dt;
+    double inertia_stiff = mass / dt_sq;
+    
+    // Set diagonal Hessian as inertia stiffness (isotropic)
+    _hess_diag[idx] = make_double3(inertia_stiff, inertia_stiff, inertia_stiff);
+}
+
+
+__global__ void _calBarrierGradientAdaptive(
+    const double3*   _vertexes,
+    const double3*   _rest_vertexes,
+    const int4*      _collisionPair,
+    double3*         _gradient,
+    const double*    _masses,
+    const double3*   _hess_diag,
+    double           dHat,
+    double           dt,
+    int              number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= number) return;
+    
+    int4   MMCVIDI   = _collisionPair[idx];
+    double dHat_sqrt = sqrt(dHat);
+    
+    if (MMCVIDI.x >= 0)
+    {
+        if (MMCVIDI.w >= 0)
+        {
+            // EE (Edge-Edge) collision with adaptive stiffness
+            double dis;
+            _d_EE(_vertexes[MMCVIDI.x],
+                  _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z],
+                  _vertexes[MMCVIDI.w],
+                  dis);
+            dis = sqrt(dis);
+            
+            // Compute gap
+            double gap = dis;  // For EE, gap is the distance itself
+            if (gap <= 0.0) return;
+            
+            // Compute adaptive stiffness
+            double avg_mass = (_masses[MMCVIDI.x] + _masses[MMCVIDI.y] + 
+                              _masses[MMCVIDI.z] + _masses[MMCVIDI.w]) * 0.25;
+            double stiff_k = barrier::compute_stiffness_simple(avg_mass, dt, gap);
+            
+            // Compute gradient with adaptive stiffness
+            __GEIGEN__::Matrix12x9d PFPxT;
+            pFpx_ee2(_vertexes[MMCVIDI.x],
+                     _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z],
+                     _vertexes[MMCVIDI.w],
+                     dHat_sqrt,
+                     PFPxT);
+            
+            __GEIGEN__::Vector9 tmp;
+            tmp.v[0] = tmp.v[1] = tmp.v[2] = tmp.v[3] = tmp.v[4] = tmp.v[5] =
+                tmp.v[6] = tmp.v[7] = 0;
+            tmp.v[8] = dis / dHat_sqrt;
+            
+            // Use adaptive stiffness as Kappa
+            double grad_coeff = barrier::simple_gradient_coeff(dis, dHat, stiff_k, USE_CUBIC_BARRIER);
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__s_vec9_multiply(tmp, grad_coeff);
+            
+            __GEIGEN__::Vector12 gradient_vec = __GEIGEN__::__M12x9_v9_multiply(PFPxT, flatten_pk1);
+            
+            atomicAdd(&(_gradient[MMCVIDI.x].x), gradient_vec.v[0]);
+            atomicAdd(&(_gradient[MMCVIDI.x].y), gradient_vec.v[1]);
+            atomicAdd(&(_gradient[MMCVIDI.x].z), gradient_vec.v[2]);
+            atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+            atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+            atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+            atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+            atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+            atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+            atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+            atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+            atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+        }
+        else
+        {
+            // Parallel EE - use existing implementation with simplified stiffness
+            MMCVIDI.w = -MMCVIDI.w - 1;
+            double3 v0 = __GEIGEN__::__minus(_vertexes[MMCVIDI.y], _vertexes[MMCVIDI.x]);
+            double3 v1 = __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.z]);
+            double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1));
+            double I1 = c * c;
+            if (I1 == 0) return;
+            
+            double dis;
+            _d_EE(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            dis = sqrt(dis);
+            
+            double gap = dis;
+            if (gap <= 0.0) return;
+            
+            double avg_mass = (_masses[MMCVIDI.x] + _masses[MMCVIDI.y] + 
+                              _masses[MMCVIDI.z] + _masses[MMCVIDI.w]) * 0.25;
+            double stiff_k = barrier::compute_stiffness_simple(avg_mass, dt, gap);
+            
+            double eps_x = _compute_epx(_rest_vertexes[MMCVIDI.x], _rest_vertexes[MMCVIDI.y],
+                                        _rest_vertexes[MMCVIDI.z], _rest_vertexes[MMCVIDI.w]);
+            
+            __GEIGEN__::Matrix3x3d F;
+            __GEIGEN__::__set_Mat_val(F, 1, 0, 0, 0, c, 0, 0, 0, dis / dHat_sqrt);
+            double3 n1 = make_double3(0, 1, 0);
+            double3 n2 = make_double3(0, 0, 1);
+            
+            __GEIGEN__::Matrix3x3d g1, g2;
+            __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(n1, n1);
+            __GEIGEN__::__M_Mat_multiply(F, nn, g1);
+            nn = __GEIGEN__::__v_vec_toMat(n2, n2);
+            __GEIGEN__::__M_Mat_multiply(F, nn, g2);
+            
+            __GEIGEN__::Vector9 flatten_g1 = __GEIGEN__::__Mat3x3_to_vec9_double(g1);
+            __GEIGEN__::Vector9 flatten_g2 = __GEIGEN__::__Mat3x3_to_vec9_double(g2);
+            
+            __GEIGEN__::Matrix12x9d PFPx;
+            pFpx_pee(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dHat_sqrt, PFPx);
+            
+            double p1, p2;
+            double I2_sq = (dis * dis) / dHat;
+            barrier::parallel_gradient_coeffs(I1, I2_sq, eps_x, dHat, stiff_k, p1, p2, USE_CUBIC_BARRIER);
+            
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__add9(
+                __GEIGEN__::__s_vec9_multiply(flatten_g1, p1),
+                __GEIGEN__::__s_vec9_multiply(flatten_g2, p2));
+            __GEIGEN__::Vector12 gradient_vec = __GEIGEN__::__M12x9_v9_multiply(PFPx, flatten_pk1);
+            
+            atomicAdd(&(_gradient[MMCVIDI.x].x), gradient_vec.v[0]);
+            atomicAdd(&(_gradient[MMCVIDI.x].y), gradient_vec.v[1]);
+            atomicAdd(&(_gradient[MMCVIDI.x].z), gradient_vec.v[2]);
+            atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+            atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+            atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+            atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+            atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+            atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+            atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+            atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+            atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+        }
+    }
+    else
+    {
+        int v0I = -MMCVIDI.x - 1;
+        if (MMCVIDI.z < 0)
+        {
+            if (MMCVIDI.y < 0)
+            {
+                // PPP collision - skip for now, handle in full implementation
+                return;
+            }
+            else
+            {
+                // PP (Point-Point) collision with adaptive stiffness
+                double dis;
+                _d_PP(_vertexes[v0I], _vertexes[MMCVIDI.y], dis);
+                dis = sqrt(dis);
+                
+                double gap = dis;
+                if (gap <= 0.0) return;
+                
+                double avg_mass = (_masses[v0I] + _masses[MMCVIDI.y]) * 0.5;
+                double stiff_k = barrier::compute_stiffness_simple(avg_mass, dt, gap);
+                
+                double d_hat_sqrt = sqrt(dHat);
+                __GEIGEN__::Vector6 PFPxT;
+                pFpx_pp2(_vertexes[v0I], _vertexes[MMCVIDI.y], d_hat_sqrt, PFPxT);
+                double fnn = dis / d_hat_sqrt;
+                
+                double grad_coeff = barrier::simple_gradient_coeff(dis, dHat, stiff_k, USE_CUBIC_BARRIER);
+                double flatten_pk1 = fnn * grad_coeff;
+                
+                __GEIGEN__::Vector6 gradient_vec = __GEIGEN__::__s_vec6_multiply(PFPxT, flatten_pk1);
+                
+                atomicAdd(&(_gradient[v0I].x), gradient_vec.v[0]);
+                atomicAdd(&(_gradient[v0I].y), gradient_vec.v[1]);
+                atomicAdd(&(_gradient[v0I].z), gradient_vec.v[2]);
+                atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+            }
+        }
+        else if (MMCVIDI.w < 0)
+        {
+            if (MMCVIDI.y < 0)
+            {
+                // PPE collision - skip for now
+                return;
+            }
+            else
+            {
+                // PE (Point-Edge) collision with adaptive stiffness
+                double dis;
+                _d_PE(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], dis);
+                dis = sqrt(dis);
+                
+                double gap = dis;
+                if (gap <= 0.0) return;
+                
+                double avg_mass = (_masses[v0I] + _masses[MMCVIDI.y] + _masses[MMCVIDI.z]) / 3.0;
+                double stiff_k = barrier::compute_stiffness_simple(avg_mass, dt, gap);
+                
+                double d_hat_sqrt = sqrt(dHat);
+                __GEIGEN__::Matrix9x4d PFPxT;
+                pFpx_pe2(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], d_hat_sqrt, PFPxT);
+                
+                __GEIGEN__::Vector4 fnn;
+                fnn.v[0] = fnn.v[1] = fnn.v[2] = 0;
+                fnn.v[3] = dis / d_hat_sqrt;
+                
+                double grad_coeff = barrier::simple_gradient_coeff(dis, dHat, stiff_k, USE_CUBIC_BARRIER);
+                __GEIGEN__::Vector4 flatten_pk1 = __GEIGEN__::__s_vec4_multiply(fnn, grad_coeff);
+                
+                __GEIGEN__::Vector9 gradient_vec = __GEIGEN__::__M9x4_v4_multiply(PFPxT, flatten_pk1);
+                
+                atomicAdd(&(_gradient[v0I].x), gradient_vec.v[0]);
+                atomicAdd(&(_gradient[v0I].y), gradient_vec.v[1]);
+                atomicAdd(&(_gradient[v0I].z), gradient_vec.v[2]);
+                atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+                atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+                atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+                atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+            }
+        }
+        else
+        {
+            // PT (Point-Triangle) collision with adaptive stiffness
+            double dis;
+            _d_PT(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            dis = sqrt(dis);
+            
+            double gap = dis;
+            if (gap <= 0.0) return;
+            
+            double avg_mass = (_masses[v0I] + _masses[MMCVIDI.y] + 
+                              _masses[MMCVIDI.z] + _masses[MMCVIDI.w]) * 0.25;
+            double stiff_k = barrier::compute_stiffness_simple(avg_mass, dt, gap);
+            
+            double d_hat_sqrt = sqrt(dHat);
+            __GEIGEN__::Matrix12x9d PFPxT;
+            pFpx_pt2(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w],
+                     d_hat_sqrt, PFPxT);
+            
+            __GEIGEN__::Vector9 tmp;
+            tmp.v[0] = tmp.v[1] = tmp.v[2] = tmp.v[3] = tmp.v[4] = tmp.v[5] =
+                tmp.v[6] = tmp.v[7] = 0;
+            tmp.v[8] = dis / d_hat_sqrt;
+            
+            double grad_coeff = barrier::simple_gradient_coeff(dis, dHat, stiff_k, USE_CUBIC_BARRIER);
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__s_vec9_multiply(tmp, grad_coeff);
+            
+            __GEIGEN__::Vector12 gradient_vec = __GEIGEN__::__M12x9_v9_multiply(PFPxT, flatten_pk1);
+            
+            atomicAdd(&(_gradient[v0I].x), gradient_vec.v[0]);
+            atomicAdd(&(_gradient[v0I].y), gradient_vec.v[1]);
+            atomicAdd(&(_gradient[v0I].z), gradient_vec.v[2]);
+            atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+            atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+            atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+            atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+            atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+            atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+            atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+            atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+            atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+        }
+    }
+}
+
+
+__global__ void _calBarrierGradientAndHessianAdaptive(
+    const double3*   _vertexes,
+    const double3*   _rest_vertexes,
+    const int4*      _collisionPair,
+    double3*         _gradient,
+    Eigen::Matrix3d* triplet_values,
+    int*             row_ids,
+    int*             col_ids,
+    uint32_t*        _cpNum,
+    int*             matIndex,
+    const double*    _masses,
+    const double3*   _hess_diag,
+    double           dHat,
+    double           dt,
+    int              offset4,
+    int              offset3,
+    int              offset2,
+    int              number)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= number) return;
+    
+    int4   MMCVIDI   = _collisionPair[idx];
+    double dHat_sqrt = sqrt(dHat);
+    double gassThreshold = 1e-6;
+    
+    if (MMCVIDI.x >= 0)
+    {
+        if (MMCVIDI.w >= 0)
+        {
+            // EE collision with adaptive stiffness
+            double dis;
+            _d_EE(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            dis = sqrt(dis);
+            
+            double gap = dis;
+            if (gap <= 0.0) return;
+            
+            // Compute adaptive stiffness using full stiffness computation
+            double3 e = __GEIGEN__::__minus(
+                __GEIGEN__::__add(
+                    __GEIGEN__::__s_vec_multiply(_vertexes[MMCVIDI.x], 0.5),
+                    __GEIGEN__::__s_vec_multiply(_vertexes[MMCVIDI.y], 0.5)),
+                __GEIGEN__::__add(
+                    __GEIGEN__::__s_vec_multiply(_vertexes[MMCVIDI.z], 0.5),
+                    __GEIGEN__::__s_vec_multiply(_vertexes[MMCVIDI.w], 0.5)));
+            
+            double stiff_k = barrier::compute_stiffness_EE(
+                e,
+                _masses[MMCVIDI.x], _masses[MMCVIDI.y], _masses[MMCVIDI.z], _masses[MMCVIDI.w],
+                0.5, 0.5, 0.5, 0.5,  // Approximate barycentric coords
+                gap,
+                _hess_diag[MMCVIDI.x], _hess_diag[MMCVIDI.y],
+                _hess_diag[MMCVIDI.z], _hess_diag[MMCVIDI.w]);
+            
+            double d_hat_sqrt = sqrt(dHat);
+            __GEIGEN__::Matrix12x9d PFPxT;
+            pFpx_ee2(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], d_hat_sqrt, PFPxT);
+            
+            __GEIGEN__::Vector9 tmp;
+            tmp.v[0] = tmp.v[1] = tmp.v[2] = tmp.v[3] = tmp.v[4] = tmp.v[5] =
+                tmp.v[6] = tmp.v[7] = 0;
+            tmp.v[8] = dis / d_hat_sqrt;
+            
+            __GEIGEN__::Vector9 q0;
+            q0.v[0] = q0.v[1] = q0.v[2] = q0.v[3] = q0.v[4] = q0.v[5] =
+                q0.v[6] = q0.v[7] = 0;
+            q0.v[8] = 1;
+            
+            // Gradient with adaptive stiffness
+            double grad_coeff = barrier::simple_gradient_coeff(dis, dHat, stiff_k, USE_CUBIC_BARRIER);
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__s_vec9_multiply(tmp, grad_coeff);
+            __GEIGEN__::Vector12 gradient_vec = __GEIGEN__::__M12x9_v9_multiply(PFPxT, flatten_pk1);
+            
+            atomicAdd(&(_gradient[MMCVIDI.x].x), gradient_vec.v[0]);
+            atomicAdd(&(_gradient[MMCVIDI.x].y), gradient_vec.v[1]);
+            atomicAdd(&(_gradient[MMCVIDI.x].z), gradient_vec.v[2]);
+            atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+            atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+            atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+            atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+            atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+            atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+            atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+            atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+            atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+            
+            // Hessian with adaptive stiffness
+            double lambda0 = barrier::simple_hessian_coeff(dis, dHat, stiff_k, gassThreshold, USE_CUBIC_BARRIER);
+            __GEIGEN__::Matrix9x9d H = __GEIGEN__::__S_Mat9x9_multiply(
+                __GEIGEN__::__v9_vec9_toMat9x9(q0, q0), lambda0);
+            
+            __GEIGEN__::Matrix12x12d Hessian;
+            __GEIGEN__::__M12x9_S9x9_MT9x12_Multiply(PFPxT, H, Hessian);
+            
+            int Hidx = matIndex[idx];
+            uint4 global_index = make_uint4(MMCVIDI.x, MMCVIDI.y, MMCVIDI.z, MMCVIDI.w);
+            int triplet_id_offset = Hidx * M12_Off;
+            write_triplet<12, 12>(triplet_values, row_ids, col_ids, &(global_index.x), Hessian.m, triplet_id_offset);
+        }
+        else
+        {
+            // Parallel EE - use simplified approach for now
+            MMCVIDI.w = -MMCVIDI.w - 1;
+            double3 v0 = __GEIGEN__::__minus(_vertexes[MMCVIDI.y], _vertexes[MMCVIDI.x]);
+            double3 v1 = __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.z]);
+            double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1));
+            double I1 = c * c;
+            if (I1 == 0) return;
+            
+            double dis;
+            _d_EE(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                  _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            double I2 = dis / dHat;
+            dis = sqrt(dis);
+            
+            double gap = dis;
+            if (gap <= 0.0) return;
+            
+            double avg_mass = (_masses[MMCVIDI.x] + _masses[MMCVIDI.y] + 
+                              _masses[MMCVIDI.z] + _masses[MMCVIDI.w]) * 0.25;
+            double stiff_k = barrier::compute_stiffness_simple(avg_mass, dt, gap);
+            
+            __GEIGEN__::Matrix3x3d F;
+            __GEIGEN__::__set_Mat_val(F, 1, 0, 0, 0, c, 0, 0, 0, dis / dHat_sqrt);
+            double3 n1 = make_double3(0, 1, 0);
+            double3 n2 = make_double3(0, 0, 1);
+            
+            double eps_x = _compute_epx(_rest_vertexes[MMCVIDI.x], _rest_vertexes[MMCVIDI.y],
+                                        _rest_vertexes[MMCVIDI.z], _rest_vertexes[MMCVIDI.w]);
+            
+            __GEIGEN__::Matrix3x3d g1, g2;
+            __GEIGEN__::Matrix3x3d nn = __GEIGEN__::__v_vec_toMat(n1, n1);
+            __GEIGEN__::__M_Mat_multiply(F, nn, g1);
+            nn = __GEIGEN__::__v_vec_toMat(n2, n2);
+            __GEIGEN__::__M_Mat_multiply(F, nn, g2);
+            
+            __GEIGEN__::Vector9 flatten_g1 = __GEIGEN__::__Mat3x3_to_vec9_double(g1);
+            __GEIGEN__::Vector9 flatten_g2 = __GEIGEN__::__Mat3x3_to_vec9_double(g2);
+            
+            __GEIGEN__::Matrix12x9d PFPx;
+            pFpx_pee(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y],
+                     _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dHat_sqrt, PFPx);
+            
+            double p1, p2;
+            double I2_sq = (dis * dis) / dHat;
+            barrier::parallel_gradient_coeffs(I1, I2_sq, eps_x, dHat, stiff_k, p1, p2, USE_CUBIC_BARRIER);
+            
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__add9(
+                __GEIGEN__::__s_vec9_multiply(flatten_g1, p1),
+                __GEIGEN__::__s_vec9_multiply(flatten_g2, p2));
+            __GEIGEN__::Vector12 gradient_vec = __GEIGEN__::__M12x9_v9_multiply(PFPx, flatten_pk1);
+            
+            atomicAdd(&(_gradient[MMCVIDI.x].x), gradient_vec.v[0]);
+            atomicAdd(&(_gradient[MMCVIDI.x].y), gradient_vec.v[1]);
+            atomicAdd(&(_gradient[MMCVIDI.x].z), gradient_vec.v[2]);
+            atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+            atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+            atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+            atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+            atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+            atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+            atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+            atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+            atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+            
+            // Hessian
+            double lambda10, lambda11, lambda12, lambda20, lambdag1g;
+            barrier::parallel_hessian_coeffs(I1, I2_sq, c, F.m[2][2], eps_x, dHat, stiff_k,
+                                            lambda10, lambda11, lambda12, lambda20, lambdag1g,
+                                            USE_CUBIC_BARRIER);
+            
+            __GEIGEN__::Matrix3x3d Tx, Ty, Tz;
+            __GEIGEN__::__set_Mat_val(Tx, 0, 0, 0, 0, 0, 1, 0, -1, 0);
+            __GEIGEN__::__set_Mat_val(Ty, 0, 0, -1, 0, 0, 0, 1, 0, 0);
+            __GEIGEN__::__set_Mat_val(Tz, 0, 1, 0, -1, 0, 0, 0, 0, 0);
+            
+            __GEIGEN__::Vector9 q11 = __GEIGEN__::__Mat3x3_to_vec9_double(
+                __GEIGEN__::__M_Mat_multiply(Tx, g1));
+            __GEIGEN__::__normalized_vec9_double(q11);
+            __GEIGEN__::Vector9 q12 = __GEIGEN__::__Mat3x3_to_vec9_double(
+                __GEIGEN__::__M_Mat_multiply(Tz, g1));
+            __GEIGEN__::__normalized_vec9_double(q12);
+            
+            __GEIGEN__::Matrix9x9d projectedH;
+            __GEIGEN__::__init_Mat9x9(projectedH, 0);
+            
+            __GEIGEN__::Matrix9x9d M9_temp = __GEIGEN__::__v9_vec9_toMat9x9(q11, q11);
+            M9_temp = __GEIGEN__::__S_Mat9x9_multiply(M9_temp, lambda11);
+            projectedH = __GEIGEN__::__Mat9x9_add(projectedH, M9_temp);
+            
+            M9_temp = __GEIGEN__::__v9_vec9_toMat9x9(q12, q12);
+            M9_temp = __GEIGEN__::__S_Mat9x9_multiply(M9_temp, lambda12);
+            projectedH = __GEIGEN__::__Mat9x9_add(projectedH, M9_temp);
+            
+            Eigen::Matrix2d FMat2;
+            FMat2 << lambda10, lambdag1g, lambdag1g, lambda20;
+            makePDGeneral_ipc<double, 2>(FMat2);
+            projectedH.m[4][4] += FMat2(0, 0);
+            projectedH.m[4][8] += FMat2(0, 1);
+            projectedH.m[8][4] += FMat2(1, 0);
+            projectedH.m[8][8] += FMat2(1, 1);
+            
+            __GEIGEN__::Matrix12x12d Hessian;
+            __GEIGEN__::__M12x9_S9x9_MT9x12_Multiply(PFPx, projectedH, Hessian);
+            
+            int Hidx = matIndex[idx];
+            uint4 global_index = make_uint4(MMCVIDI.x, MMCVIDI.y, MMCVIDI.z, MMCVIDI.w);
+            int triplet_id_offset = Hidx * M12_Off;
+            write_triplet<12, 12>(triplet_values, row_ids, col_ids, &(global_index.x), Hessian.m, triplet_id_offset);
+        }
+    }
+    else
+    {
+        int v0I = -MMCVIDI.x - 1;
+        if (MMCVIDI.z < 0)
+        {
+            if (MMCVIDI.y < 0)
+            {
+                // PPP - skip for now
+                return;
+            }
+            else
+            {
+                // PP with adaptive stiffness
+                double dis;
+                _d_PP(_vertexes[v0I], _vertexes[MMCVIDI.y], dis);
+                dis = sqrt(dis);
+                
+                double gap = dis;
+                if (gap <= 0.0) return;
+                
+                double3 e = __GEIGEN__::__minus(_vertexes[v0I], _vertexes[MMCVIDI.y]);
+                double stiff_k = barrier::compute_stiffness_PP(
+                    e, _masses[v0I], _masses[MMCVIDI.y], gap,
+                    _hess_diag[v0I], _hess_diag[MMCVIDI.y]);
+                
+                double d_hat_sqrt = sqrt(dHat);
+                __GEIGEN__::Vector6 PFPxT;
+                pFpx_pp2(_vertexes[v0I], _vertexes[MMCVIDI.y], d_hat_sqrt, PFPxT);
+                double fnn = dis / d_hat_sqrt;
+                
+                // Gradient
+                double grad_coeff = barrier::simple_gradient_coeff(dis, dHat, stiff_k, USE_CUBIC_BARRIER);
+                double flatten_pk1 = fnn * grad_coeff;
+                __GEIGEN__::Vector6 gradient_vec = __GEIGEN__::__s_vec6_multiply(PFPxT, flatten_pk1);
+                
+                atomicAdd(&(_gradient[v0I].x), gradient_vec.v[0]);
+                atomicAdd(&(_gradient[v0I].y), gradient_vec.v[1]);
+                atomicAdd(&(_gradient[v0I].z), gradient_vec.v[2]);
+                atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+                
+                // Hessian
+                double lambda0 = barrier::simple_hessian_coeff(dis, dHat, stiff_k, gassThreshold, USE_CUBIC_BARRIER);
+                double H = lambda0;
+                __GEIGEN__::Matrix6x6d Hessian = __GEIGEN__::__s_M6x6_Multiply(
+                    __GEIGEN__::__v6_vec6_toMat6x6(PFPxT, PFPxT), H);
+                
+                int Hidx = matIndex[idx];
+                uint2 global_index = make_uint2(v0I, MMCVIDI.y);
+                int triplet_id_offset = Hidx * M6_Off + offset3 * M9_Off + offset4 * M12_Off;
+                write_triplet<6, 6>(triplet_values, row_ids, col_ids, &(global_index.x), Hessian.m, triplet_id_offset);
+            }
+        }
+        else if (MMCVIDI.w < 0)
+        {
+            if (MMCVIDI.y < 0)
+            {
+                // PPE - skip for now
+                return;
+            }
+            else
+            {
+                // PE with adaptive stiffness
+                double dis;
+                _d_PE(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], dis);
+                dis = sqrt(dis);
+                
+                double gap = dis;
+                if (gap <= 0.0) return;
+                
+                double avg_mass = (_masses[v0I] + _masses[MMCVIDI.y] + _masses[MMCVIDI.z]) / 3.0;
+                double stiff_k = barrier::compute_stiffness_simple(avg_mass, dt, gap);
+                
+                double d_hat_sqrt = sqrt(dHat);
+                __GEIGEN__::Matrix9x4d PFPxT;
+                pFpx_pe2(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], d_hat_sqrt, PFPxT);
+                
+                __GEIGEN__::Vector4 fnn;
+                fnn.v[0] = fnn.v[1] = fnn.v[2] = 0;
+                fnn.v[3] = dis / d_hat_sqrt;
+                
+                // Gradient
+                double grad_coeff = barrier::simple_gradient_coeff(dis, dHat, stiff_k, USE_CUBIC_BARRIER);
+                __GEIGEN__::Vector4 flatten_pk1 = __GEIGEN__::__s_vec4_multiply(fnn, grad_coeff);
+                __GEIGEN__::Vector9 gradient_vec = __GEIGEN__::__M9x4_v4_multiply(PFPxT, flatten_pk1);
+                
+                atomicAdd(&(_gradient[v0I].x), gradient_vec.v[0]);
+                atomicAdd(&(_gradient[v0I].y), gradient_vec.v[1]);
+                atomicAdd(&(_gradient[v0I].z), gradient_vec.v[2]);
+                atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+                atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+                atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+                atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+                atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+                atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+                
+                // Hessian
+                __GEIGEN__::Vector4 q0;
+                q0.v[0] = q0.v[1] = q0.v[2] = 0;
+                q0.v[3] = 1;
+                
+                double lambda0 = barrier::simple_hessian_coeff(dis, dHat, stiff_k, gassThreshold, USE_CUBIC_BARRIER);
+                __GEIGEN__::Matrix4x4d H = __GEIGEN__::__S_Mat4x4_multiply(
+                    __GEIGEN__::__v4_vec4_toMat4x4(q0, q0), lambda0);
+                
+                __GEIGEN__::Matrix9x9d Hessian;
+                __GEIGEN__::__M9x4_S4x4_MT4x9_Multiply(PFPxT, H, Hessian);
+                
+                int Hidx = matIndex[idx];
+                uint3 global_index = make_uint3(v0I, MMCVIDI.y, MMCVIDI.z);
+                int triplet_id_offset = Hidx * M9_Off + offset4 * M12_Off;
+                write_triplet<9, 9>(triplet_values, row_ids, col_ids, &(global_index.x), Hessian.m, triplet_id_offset);
+            }
+        }
+        else
+        {
+            // PT with adaptive stiffness
+            double dis;
+            _d_PT(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w], dis);
+            dis = sqrt(dis);
+            
+            double gap = dis;
+            if (gap <= 0.0) return;
+            
+            double avg_mass = (_masses[v0I] + _masses[MMCVIDI.y] + 
+                              _masses[MMCVIDI.z] + _masses[MMCVIDI.w]) * 0.25;
+            double stiff_k = barrier::compute_stiffness_simple(avg_mass, dt, gap);
+            
+            double d_hat_sqrt = sqrt(dHat);
+            __GEIGEN__::Matrix12x9d PFPxT;
+            pFpx_pt2(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], _vertexes[MMCVIDI.w],
+                     d_hat_sqrt, PFPxT);
+            
+            __GEIGEN__::Vector9 tmp;
+            tmp.v[0] = tmp.v[1] = tmp.v[2] = tmp.v[3] = tmp.v[4] = tmp.v[5] =
+                tmp.v[6] = tmp.v[7] = 0;
+            tmp.v[8] = dis / d_hat_sqrt;
+            
+            __GEIGEN__::Vector9 q0;
+            q0.v[0] = q0.v[1] = q0.v[2] = q0.v[3] = q0.v[4] = q0.v[5] =
+                q0.v[6] = q0.v[7] = 0;
+            q0.v[8] = 1;
+            
+            // Gradient
+            double grad_coeff = barrier::simple_gradient_coeff(dis, dHat, stiff_k, USE_CUBIC_BARRIER);
+            __GEIGEN__::Vector9 flatten_pk1 = __GEIGEN__::__s_vec9_multiply(tmp, grad_coeff);
+            __GEIGEN__::Vector12 gradient_vec = __GEIGEN__::__M12x9_v9_multiply(PFPxT, flatten_pk1);
+            
+            atomicAdd(&(_gradient[v0I].x), gradient_vec.v[0]);
+            atomicAdd(&(_gradient[v0I].y), gradient_vec.v[1]);
+            atomicAdd(&(_gradient[v0I].z), gradient_vec.v[2]);
+            atomicAdd(&(_gradient[MMCVIDI.y].x), gradient_vec.v[3]);
+            atomicAdd(&(_gradient[MMCVIDI.y].y), gradient_vec.v[4]);
+            atomicAdd(&(_gradient[MMCVIDI.y].z), gradient_vec.v[5]);
+            atomicAdd(&(_gradient[MMCVIDI.z].x), gradient_vec.v[6]);
+            atomicAdd(&(_gradient[MMCVIDI.z].y), gradient_vec.v[7]);
+            atomicAdd(&(_gradient[MMCVIDI.z].z), gradient_vec.v[8]);
+            atomicAdd(&(_gradient[MMCVIDI.w].x), gradient_vec.v[9]);
+            atomicAdd(&(_gradient[MMCVIDI.w].y), gradient_vec.v[10]);
+            atomicAdd(&(_gradient[MMCVIDI.w].z), gradient_vec.v[11]);
+            
+            // Hessian
+            double lambda0 = barrier::simple_hessian_coeff(dis, dHat, stiff_k, gassThreshold, USE_CUBIC_BARRIER);
+            __GEIGEN__::Matrix9x9d H = __GEIGEN__::__S_Mat9x9_multiply(
+                __GEIGEN__::__v9_vec9_toMat9x9(q0, q0), lambda0);
+            
+            __GEIGEN__::Matrix12x12d Hessian;
+            __GEIGEN__::__M12x9_S9x9_MT9x12_Multiply(PFPxT, H, Hessian);
+            
+            int Hidx = matIndex[idx];
+            uint4 global_index = make_uint4(v0I, MMCVIDI.y, MMCVIDI.z, MMCVIDI.w);
+            int triplet_id_offset = Hidx * M12_Off;
+            write_triplet<12, 12>(triplet_values, row_ids, col_ids, &(global_index.x), Hessian.m, triplet_id_offset);
+        }
+    }
+}

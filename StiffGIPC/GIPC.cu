@@ -24,6 +24,7 @@
 #include <gipc/utils/timer.h>
 #include "ipc_collision.cuh"              // Collision & friction kernel declarations
 #include "barrier_gradient_hessian.cuh"   // Barrier gradient/hessian kernel declarations
+#include "barrier_functions.cuh"          // Barrier function definitions (cubic/log)
 
 #include <tbb/parallel_for.h>
 
@@ -31,6 +32,14 @@
 using namespace Eigen;
 #define RANK 2
 #define NEWF
+
+// Barrier type selection - MUST match barrier_gradient_hessian.cu
+#define USE_CUBIC_BARRIER false
+
+// Ground collision stiffness mode:
+// true  = Use adaptive stiffness: stiff_k = mass * (1/dt² + 1/gap²)
+// false = Use fixed Kappa (original behavior)
+#define USE_GROUND_ADAPTIVE_STIFFNESS false  // Set to false for fixed Kappa
 
 template <typename Scalar, int size>
 __device__ __host__ void makePDGeneral(Eigen::Matrix<Scalar, size, size>& symMtr)
@@ -711,15 +720,21 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
     {
         if(MMCVIDI.w >= 0)
         {
+            // EE (Edge-Edge) collision
             double dis;
             _d_EE(_vertexes[MMCVIDI.x],
                   _vertexes[MMCVIDI.y],
                   _vertexes[MMCVIDI.z],
                   _vertexes[MMCVIDI.w],
                   dis);
-            double I5 = dis / dHat;
-
-            double lenE = (dis - dHat);
+            dis = sqrt(dis);  // dis is now linear distance
+            
+#if USE_CUBIC_BARRIER
+            // Cubic barrier energy
+            return Kappa * barrier::cubic_energy(dis, dHat_sqrt);
+#else
+            double I5 = (dis * dis) / dHat;
+            double lenE = (dis * dis - dHat);
 #if (RANK == 1)
             return -Kappa * lenE * lenE * log(I5);
 #elif (RANK == 2)
@@ -734,16 +749,17 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
             return Kappa * lenE * lenE * log(I5) * log(I5) * log(I5) * log(I5)
                    * log(I5) * log(I5);
 #endif
+#endif
         }
         else
         {
-            //return 0;
+            // Parallel EE collision
             MMCVIDI.w = -MMCVIDI.w - 1;
             double3 v0 =
                 __GEIGEN__::__minus(_vertexes[MMCVIDI.y], _vertexes[MMCVIDI.x]);
             double3 v1 =
                 __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.z]);
-            double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1)) /*/ __GEIGEN__::__norm(v0)*/;
+            double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1));
             double I1 = c * c;
             if(I1 == 0)
                 return 0;
@@ -753,11 +769,19 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
                   _vertexes[MMCVIDI.z],
                   _vertexes[MMCVIDI.w],
                   dis);
-            double I2    = dis / dHat;
             double eps_x = _compute_epx(_rest_vertexes[MMCVIDI.x],
                                         _rest_vertexes[MMCVIDI.y],
                                         _rest_vertexes[MMCVIDI.z],
                                         _rest_vertexes[MMCVIDI.w]);
+            
+#if USE_CUBIC_BARRIER
+            // Mollified cubic barrier energy
+            double dis_linear = sqrt(dis);
+            double mollifier = (I1 - eps_x) * (I1 - eps_x) / (eps_x * eps_x);
+            if (I1 < eps_x) mollifier = 0.0;
+            double Energy = Kappa * mollifier * barrier::cubic_energy(dis_linear, dHat_sqrt);
+#else
+            double I2 = dis / dHat;
 #if (RANK == 1)
             double Energy = Kappa * (-(1 / (eps_x * eps_x)) * I1 * I1 + (2 / eps_x) * I1)
                             * -(dHat - dHat * I2) * (dHat - dHat * I2) * log(I2);
@@ -774,6 +798,7 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
                             * (dHat - dHat * I2) * (dHat - dHat * I2) * log(I2)
                             * log(I2) * log(I2) * log(I2) * log(I2) * log(I2);
 #endif
+#endif
             if(Energy < 0)
                 printf("I am pee\n");
             return Energy;
@@ -786,6 +811,7 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
         {
             if(MMCVIDI.y < 0)
             {
+                // PPP (Point-Point-Point) collision - mollified
                 MMCVIDI.y = -MMCVIDI.y - 1;
                 MMCVIDI.z = -MMCVIDI.z - 1;
                 MMCVIDI.w = -MMCVIDI.w - 1;
@@ -795,17 +821,24 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
                     __GEIGEN__::__minus(_vertexes[MMCVIDI.z], _vertexes[MMCVIDI.x]);
                 double3 v1 =
                     __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.y]);
-                double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1)) /*/ __GEIGEN__::__norm(v0)*/;
+                double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1));
                 double I1 = c * c;
                 if(I1 == 0)
                     return 0;
                 double dis;
                 _d_PP(_vertexes[MMCVIDI.x], _vertexes[MMCVIDI.y], dis);
-                double I2    = dis / dHat;
                 double eps_x = _compute_epx(_rest_vertexes[MMCVIDI.x],
                                             _rest_vertexes[MMCVIDI.z],
                                             _rest_vertexes[MMCVIDI.y],
                                             _rest_vertexes[MMCVIDI.w]);
+                
+#if USE_CUBIC_BARRIER
+                double dis_linear = sqrt(dis);
+                double mollifier = (I1 - eps_x) * (I1 - eps_x) / (eps_x * eps_x);
+                if (I1 < eps_x) mollifier = 0.0;
+                double Energy = Kappa * mollifier * barrier::cubic_energy(dis_linear, dHat_sqrt);
+#else
+                double I2 = dis / dHat;
 #if (RANK == 1)
                 double Energy =
                     Kappa * (-(1 / (eps_x * eps_x)) * I1 * I1 + (2 / eps_x) * I1)
@@ -825,17 +858,23 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
                     * (dHat - dHat * I2) * (dHat - dHat * I2) * log(I2)
                     * log(I2) * log(I2) * log(I2) * log(I2) * log(I2);
 #endif
+#endif
                 if(Energy < 0)
                     printf("I am pp\n");
                 return Energy;
             }
             else
             {
+                // PP (Point-Point) collision
                 double dis;
                 _d_PP(_vertexes[v0I], _vertexes[MMCVIDI.y], dis);
-                double I5 = dis / dHat;
-
-                double lenE = (dis - dHat);
+                dis = sqrt(dis);  // dis is now linear distance
+                
+#if USE_CUBIC_BARRIER
+                return Kappa * barrier::cubic_energy(dis, dHat_sqrt);
+#else
+                double I5 = (dis * dis) / dHat;
+                double lenE = (dis * dis - dHat);
 #if (RANK == 1)
                 return -Kappa * lenE * lenE * log(I5);
 #elif (RANK == 2)
@@ -851,14 +890,15 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
                 return Kappa * lenE * lenE * log(I5) * log(I5) * log(I5)
                        * log(I5) * log(I5) * log(I5);
 #endif
+#endif
             }
         }
         else if(MMCVIDI.w < 0)
         {
             if(MMCVIDI.y < 0)
             {
+                // PPE (Point-Point-Edge) collision - mollified
                 MMCVIDI.y = -MMCVIDI.y - 1;
-                //MMCVIDI.z = -MMCVIDI.z - 1;
                 MMCVIDI.w = -MMCVIDI.w - 1;
                 MMCVIDI.x = v0I;
 
@@ -866,7 +906,7 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
                     __GEIGEN__::__minus(_vertexes[MMCVIDI.w], _vertexes[MMCVIDI.x]);
                 double3 v1 =
                     __GEIGEN__::__minus(_vertexes[MMCVIDI.z], _vertexes[MMCVIDI.y]);
-                double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1)) /*/ __GEIGEN__::__norm(v0)*/;
+                double c = __GEIGEN__::__norm(__GEIGEN__::__v_vec_cross(v0, v1));
                 double I1 = c * c;
                 if(I1 == 0)
                     return 0;
@@ -875,11 +915,18 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
                       _vertexes[MMCVIDI.y],
                       _vertexes[MMCVIDI.z],
                       dis);
-                double I2    = dis / dHat;
                 double eps_x = _compute_epx(_rest_vertexes[MMCVIDI.x],
                                             _rest_vertexes[MMCVIDI.w],
                                             _rest_vertexes[MMCVIDI.y],
                                             _rest_vertexes[MMCVIDI.z]);
+                
+#if USE_CUBIC_BARRIER
+                double dis_linear = sqrt(dis);
+                double mollifier = (I1 - eps_x) * (I1 - eps_x) / (eps_x * eps_x);
+                if (I1 < eps_x) mollifier = 0.0;
+                double Energy = Kappa * mollifier * barrier::cubic_energy(dis_linear, dHat_sqrt);
+#else
+                double I2 = dis / dHat;
 #if (RANK == 1)
                 double Energy =
                     Kappa * (-(1 / (eps_x * eps_x)) * I1 * I1 + (2 / eps_x) * I1)
@@ -899,17 +946,23 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
                     * (dHat - dHat * I2) * (dHat - dHat * I2) * log(I2)
                     * log(I2) * log(I2) * log(I2) * log(I2) * log(I2);
 #endif
+#endif
                 if(Energy < 0)
                     printf("I am ppe\n");
                 return Energy;
             }
             else
             {
+                // PE (Point-Edge) collision
                 double dis;
                 _d_PE(_vertexes[v0I], _vertexes[MMCVIDI.y], _vertexes[MMCVIDI.z], dis);
-                double I5 = dis / dHat;
-
-                double lenE = (dis - dHat);
+                dis = sqrt(dis);  // dis is now linear distance
+                
+#if USE_CUBIC_BARRIER
+                return Kappa * barrier::cubic_energy(dis, dHat_sqrt);
+#else
+                double I5 = (dis * dis) / dHat;
+                double lenE = (dis * dis - dHat);
 #if (RANK == 1)
                 return -Kappa * lenE * lenE * log(I5);
 #elif (RANK == 2)
@@ -925,19 +978,25 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
                 return Kappa * lenE * lenE * log(I5) * log(I5) * log(I5)
                        * log(I5) * log(I5) * log(I5);
 #endif
+#endif
             }
         }
         else
         {
+            // PT (Point-Triangle) collision
             double dis;
             _d_PT(_vertexes[v0I],
                   _vertexes[MMCVIDI.y],
                   _vertexes[MMCVIDI.z],
                   _vertexes[MMCVIDI.w],
                   dis);
-            double I5 = dis / dHat;
-
-            double lenE = (dis - dHat);
+            dis = sqrt(dis);  // dis is now linear distance
+            
+#if USE_CUBIC_BARRIER
+            return Kappa * barrier::cubic_energy(dis, dHat_sqrt);
+#else
+            double I5 = (dis * dis) / dHat;
+            double lenE = (dis * dis - dHat);
 #if (RANK == 1)
             return -Kappa * lenE * lenE * log(I5);
 #elif (RANK == 2)
@@ -951,6 +1010,7 @@ __device__ double __cal_Barrier_energy(const double3* _vertexes,
 #elif (RANK == 6)
             return Kappa * lenE * lenE * log(I5) * log(I5) * log(I5) * log(I5)
                    * log(I5) * log(I5);
+#endif
 #endif
         }
     }
@@ -2116,8 +2176,15 @@ __global__ void _computeGroundEnergy_Reduction(double*        squeue,
     double3 normal = *g_normal;
     int     gidx   = _environment_collisionPair[idx];
     double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    
+#if USE_CUBIC_BARRIER
+    // Cubic barrier energy for ground collision
+    double dHat_sqrt = sqrt(dHat);
+    double temp = Kappa * barrier::cubic_energy(dist, dHat_sqrt);
+#else
     double  dist2 = dist * dist;
     double  temp  = -(dist2 - dHat) * (dist2 - dHat) * log(dist2 / dHat);
+#endif
 
     int warpTid = threadIdx.x % 32;
     int warpId  = (threadIdx.x >> 5);
@@ -2149,6 +2216,81 @@ __global__ void _computeGroundEnergy_Reduction(double*        squeue,
         temp = tep[threadIdx.x];
 
         //	warpNum = ((tidNum + 31) >> 5);
+        for(int i = 1; i < warpNum; i = (i << 1))
+        {
+            temp += __shfl_down_sync(0xffffffff, temp, i);
+        }
+    }
+    if(threadIdx.x == 0)
+    {
+        squeue[blockIdx.x] = temp;
+    }
+}
+
+// Adaptive stiffness version of ground energy calculation
+// Uses per-vertex stiffness based on mass and gap distance
+__global__ void _computeGroundEnergy_Reduction_Adaptive(
+    double*         squeue,
+    const double3*  vertexes,
+    const double*   g_offset,
+    const double3*  g_normal,
+    const uint32_t* _environment_collisionPair,
+    const double*   masses,
+    double          dHat,
+    double          dt,
+    int             number)
+{
+    int idof = blockIdx.x * blockDim.x;
+    int idx  = threadIdx.x + idof;
+
+    extern __shared__ double tep[];
+
+    if(idx >= number)
+        return;
+
+    double3 normal = *g_normal;
+    int     gidx   = _environment_collisionPair[idx];
+    double  dist  = __GEIGEN__::__v_vec_dot(normal, vertexes[gidx]) - *g_offset;
+    
+    // Compute adaptive stiffness: stiff_k = mass * (1/dt² + 1/gap²)
+    double gap = fmax(dist, 1e-10);  // gap must be positive
+    double stiff_k = barrier::compute_stiffness_ground_simple(masses[gidx], dt, gap);
+    
+#if USE_CUBIC_BARRIER
+    // Cubic barrier energy with adaptive stiffness
+    double dHat_sqrt = sqrt(dHat);
+    double temp = stiff_k * barrier::cubic_energy(dist, dHat_sqrt);
+#else
+    // Log barrier (original formulation) with adaptive stiffness
+    double dist2 = dist * dist;
+    double temp = stiff_k * (-(dist2 - dHat) * (dist2 - dHat) * log(dist2 / dHat));
+#endif
+
+    int warpTid = threadIdx.x % 32;
+    int warpId  = (threadIdx.x >> 5);
+    int warpNum;
+    if(blockIdx.x == gridDim.x - 1)
+    {
+        warpNum = ((number - idof + 31) >> 5);
+    }
+    else
+    {
+        warpNum = ((blockDim.x) >> 5);
+    }
+    for(int i = 1; i < 32; i = (i << 1))
+    {
+        temp += __shfl_down_sync(0xffffffff, temp, i);
+    }
+    if(warpTid == 0)
+    {
+        tep[warpId] = temp;
+    }
+    __syncthreads();
+    if(threadIdx.x >= warpNum)
+        return;
+    if(warpNum > 1)
+    {
+        temp = tep[threadIdx.x];
         for(int i = 1; i < warpNum; i = (i << 1))
         {
             temp += __shfl_down_sync(0xffffffff, temp, i);
@@ -3957,6 +4099,39 @@ void GIPC::computeGroundGradientAndHessian(double3* _gradient)
         numbers);
 }
 
+void GIPC::computeGroundGradientAndHessianAdaptive(double3* _gradient, const double* masses, double dt)
+{
+#ifndef USE_FRICTION
+    CUDA_SAFE_CALL(cudaMemset(_gpNum, 0, sizeof(uint32_t)));
+#endif
+    int numbers = h_gpNum;
+    if(numbers < 1)
+    {
+        return;
+    }
+    const unsigned int threadNum = default_threads;
+    int                blockNum  = (numbers + threadNum - 1) / threadNum;
+    
+    // Use adaptive stiffness kernel for ground collision
+    // This computes stiff_k = mass * (1/dt² + 1/gap²) for each contact
+    _computeGroundGradientAndHessianAdaptive<<<blockNum, threadNum>>>(
+        _vertexes,
+        _groundOffset,
+        _groundNormal,
+        _environment_collisionPair,
+        _gradient,
+        _gpNum,
+        gipc_global_triplet.block_values(),
+        gipc_global_triplet.block_row_indices(),
+        gipc_global_triplet.block_col_indices(),
+        masses,
+        nullptr,  // hess_diag: nullptr means use simplified stiffness
+        dHat,
+        dt,
+        gipc_global_triplet.global_triplet_offset,
+        numbers);
+}
+
 void GIPC::computeCloseGroundVal()
 {
     int numbers = h_gpNum;
@@ -4047,6 +4222,29 @@ void GIPC::computeGroundGradient(double3* _gradient, double mKappa)
                                                     dHat,
                                                     mKappa,
                                                     numbers);
+}
+
+void GIPC::computeGroundGradientAdaptive(double3* _gradient, const double* masses, double dt)
+{
+    int numbers = h_gpNum;
+    if(numbers < 1)
+        return;
+    const unsigned int threadNum = default_threads;
+    int                blockNum  = (numbers + threadNum - 1) / threadNum;
+    
+    // Use adaptive stiffness kernel for ground collision gradient
+    _computeGroundGradientAdaptive<<<blockNum, threadNum>>>(
+        _vertexes,
+        _groundOffset,
+        _groundNormal,
+        _environment_collisionPair,
+        _gradient,
+        _gpNum,
+        masses,
+        nullptr,  // hess_diag: nullptr means use simplified stiffness
+        dHat,
+        dt,
+        numbers);
 }
 
 void GIPC::computeSoftConstraintGradient(double3* _gradient)
@@ -4913,28 +5111,41 @@ void GIPC::initKappa(device_TetraData& TetMesh)
 
 void GIPC::partitionContactHessian()
 {
+    int offset = gipc_global_triplet.global_collision_triplet_offset;
+    
+    // _reorder_triplets writes to buffer[offset:2*offset], so we need 2*offset capacity
+    size_t required_size = 2 * (size_t)offset;
+    if (required_size > gipc_global_triplet.m_block_row_indices.size()) {
+        gipc_global_triplet.resize_triplets(required_size);
+    }
+    
+    // Also check hash buffers
+    if (offset > gipc_global_triplet.global_external_max_capcity) {
+        gipc_global_triplet.global_external_max_capcity = offset;
+        gipc_global_triplet.resize_collision_hash_size(offset);
+    }
 
     muda::DeviceRadixSort().SortPairs(gipc_global_triplet.block_hash_value(),
                                       gipc_global_triplet.block_sort_hash_value(),
                                       gipc_global_triplet.block_index(),
                                       gipc_global_triplet.block_sort_index(),
-                                      gipc_global_triplet.global_collision_triplet_offset);
+                                      offset);
 
     int threadNum = 256;
 
     LaunchCudaKernal_default(
-        gipc_global_triplet.global_collision_triplet_offset,
+        offset,
         threadNum,
         0,
         _reorder_triplets,
         gipc_global_triplet.block_row_indices(),
         gipc_global_triplet.block_col_indices(),
         gipc_global_triplet.block_values(),
-        gipc_global_triplet.block_row_indices(gipc_global_triplet.global_collision_triplet_offset),
-        gipc_global_triplet.block_col_indices(gipc_global_triplet.global_collision_triplet_offset),
-        gipc_global_triplet.block_values(gipc_global_triplet.global_collision_triplet_offset),
+        gipc_global_triplet.block_row_indices(offset),
+        gipc_global_triplet.block_col_indices(offset),
+        gipc_global_triplet.block_values(offset),
         (const uint32_t*)gipc_global_triplet.block_sort_index(),
-        gipc_global_triplet.global_collision_triplet_offset);
+        offset);
 
     //gipc_global_triplet.d_abd_abd_contact_start_id = -1;
     //gipc_global_triplet.d_abd_fem_contact_start_id = -1;
@@ -5133,7 +5344,14 @@ float GIPC::computeGradientAndHessian(device_TetraData& TetMesh)
     }
 #endif
 
+#if USE_GROUND_ADAPTIVE_STIFFNESS
+    // Use adaptive stiffness for ground collision
+    // stiff_k = mass * (1/dt² + 1/gap²) for each contact
+    computeGroundGradientAndHessianAdaptive(contact_grads, TetMesh.masses, IPC_dt);
+#else
+    // Use fixed Kappa (original behavior)
     computeGroundGradientAndHessian(contact_grads);
+#endif
     gipc_global_triplet.global_triplet_offset += h_gpNum;
     gipc_global_triplet.global_collision_triplet_offset =
         gipc_global_triplet.global_triplet_offset;
@@ -5390,8 +5608,16 @@ double GIPC::Energy_Add_Reduction_Algorithm(int type, device_TetraData& TetMesh)
                 queue, TetMesh.fb + point_offset, _moveDir + point_offset, numbers);
             break;
         case 4:
+#if USE_GROUND_ADAPTIVE_STIFFNESS
+            // Use adaptive stiffness for ground energy
+            _computeGroundEnergy_Reduction_Adaptive<<<blockNum, threadNum, sharedMsize>>>(
+                queue, TetMesh.vertexes, _groundOffset, _groundNormal, _environment_collisionPair, 
+                TetMesh.masses, dHat, IPC_dt, numbers);
+#else
+            // Use fixed Kappa (original behavior) - note: Kappa is multiplied outside
             _computeGroundEnergy_Reduction<<<blockNum, threadNum, sharedMsize>>>(
-                queue, TetMesh.vertexes, _groundOffset, _groundNormal, _environment_collisionPair, dHat, Kappa, numbers);
+                queue, TetMesh.vertexes, _groundOffset, _groundNormal, _environment_collisionPair, dHat, 1.0, numbers);
+#endif
             break;
         case 5:
             _getFrictionEnergy_Reduction_3D<<<blockNum, threadNum, sharedMsize>>>(
@@ -5502,7 +5728,13 @@ double GIPC::computeEnergy(device_TetraData& TetMesh)
     //CUDA_SAFE_CALL(cudaDeviceSynchronize());
     Energy += barrier;
 
+#if USE_GROUND_ADAPTIVE_STIFFNESS
+    // Adaptive stiffness version: stiff_k is computed per-contact inside the kernel
+    auto ground = Energy_Add_Reduction_Algorithm(4, TetMesh);
+#else
+    // Fixed Kappa version: multiply by Kappa externally
     auto ground = Kappa * Energy_Add_Reduction_Algorithm(4, TetMesh);
+#endif
     //CUDA_SAFE_CALL(cudaDeviceSynchronize());
     Energy += ground;
 
