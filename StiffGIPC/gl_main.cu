@@ -979,8 +979,6 @@ void initScene()
             break;
         case 2:  // wrecking ball case
             set_case3();
-        case 3:  //fixed cloth
-            set_case4();
             break;
         case 3:  // fixed cloth
             set_case4();

@@ -3804,8 +3804,12 @@ void GIPC::init(double m_meanMass, double m_meanVolumn, double3 minConer, double
     long long unsigned total_max_collision_triplet_num =
         minCollisionBuffer4 * 16 + minCollisionBuffer3 * 9
         + minCollisionBuffer2 * 4 + minCollisionBuffer1;
+    // NOTE: The buffer needs 2x collision triplet space because _reorder_triplets
+    // writes sorted collision triplets to indices [offset, 2*offset) during partitioning.
+    // This was causing illegal memory access in ABD-only scenes (like wrecking ball)
+    // where internal triplets are small but collision triplets can be very large.
     long long unsigned total_max_global_triplet_num =
-        total_internal_triplet_num * 2 + total_max_collision_triplet_num;
+        total_internal_triplet_num * 2 + total_max_collision_triplet_num * 2;
 
     gipc_global_triplet.init_var();
 
